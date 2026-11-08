@@ -1,0 +1,56 @@
+{
+  "name": "@local/dsh-perfect-ui",
+  "version": "2.68.53",
+  "private": true,
+  "type": "module",
+  "description": "橘小黑工作台：自定义配色 + 余额卡片、工作区快捷操作、会话删除、技能市场。原生界面全部保持原样，功能可在设置页逐项开关。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./dist/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "dist/",
+    "*.js",
+    "*.cjs",
+    "locale/",
+    "manifest.json",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "theme",
+    "ui",
+    "skin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/<你的用户名>/dsh-perfect-ui.git"
+  },
+  "homepage": "https://github.com/<你的用户名>/dsh-perfect-ui#readme",
+  "bugs": {
+    "url": "https://github.com/<你的用户名>/dsh-perfect-ui/issues"
+  },
+  "license": "MIT",
+  "author": "dsh-perfect-ui contributors"
+}

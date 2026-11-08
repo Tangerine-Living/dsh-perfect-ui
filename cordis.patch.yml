@@ -1,0 +1,6 @@
+# dsh-perfect-ui bundle patch
+# 只有本插件自身一行：主题/余额/电源/模型滑块/工作区 Action/会话删除。
+- insert:
+    - id: dsh-perfect-ui
+      name: '@local/dsh-perfect-ui'
+      config: {}

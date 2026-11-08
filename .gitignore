@@ -1,0 +1,18 @@
+# 依赖
+node_modules/
+
+# 构建产物（发布时由 npm 打包生成，不提交源码仓库）
+dist/
+
+# 本地缓存与临时文件
+.promo-cache/
+*.log
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统文件
+Thumbs.db
+.DS_Store

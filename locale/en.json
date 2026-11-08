@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Tangerine Workbench",
+    "description": "Two layers. A) Overrides the interface palette through the official ctx.theme.overrideTokens extension point (mint-green on white by default, 50 paired light/dark tokens; background colors are customizable in Settings). B) Adds the features the host lacks via additive slots: the account balance popover, one-click workspace Actions, true session deletion with a right-click menu, and the Skill Market (browse and install SkillHub skills) — each can be switched on or off under Settings → Tangerine Workbench. The session list, composer, streaming replies, tool-call flow, model selector and right sidebar all stay the host's own components and data."
+  }
+}
