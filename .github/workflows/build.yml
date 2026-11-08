@@ -1,0 +1,31 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build client bundle
+        run: node build.js
+
+      - name: Verify output
+        run: |
+          test -f dist/client.js || { echo 'dist/client.js missing'; exit 1; }
+          node --check dist/client.js
+          echo "size: $(wc -c < dist/client.js) bytes"
+
+      - name: Validate manifest
+        run: |
+          node -e "const m=require('./manifest.json');if(!m.name||!m.version||!m.display_name){console.error('bad manifest');process.exit(1)};console.log('ok:',m.display_name,m.version)"
