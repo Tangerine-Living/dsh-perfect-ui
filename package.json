@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-perfect-ui",
-  "version": "2.68.53",
+  "version": "2.68.55",
   "private": true,
   "type": "module",
   "description": "橘小黑工作台：自定义配色 + 余额卡片、工作区快捷操作、会话删除、技能市场。原生界面全部保持原样，功能可在设置页逐项开关。",
@@ -19,7 +19,8 @@
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {

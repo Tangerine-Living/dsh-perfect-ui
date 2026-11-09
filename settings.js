@@ -35,6 +35,8 @@ function PU_settings(React, h) {
 
   var DEFAULTS = {
     balance: true, actions: true, deleteSession: true, skillMarket: true, modelStyle: true,
+    /* 隐藏侧栏「更多」按钮。默认 false = 显示（不改用户现有界面）。 */
+    hideSidebarMore: false,
     bg: { light: {}, dark: {} },
   };
 
@@ -75,6 +77,8 @@ function PU_settings(React, h) {
         deleteSession: p.deleteSession !== false,
         skillMarket: p.skillMarket !== false,
         modelStyle: p.modelStyle !== false,
+        /* 默认 false（不隐藏）；只有显式 true 才隐藏 */
+        hideSidebarMore: p.hideSidebarMore === true,
         bg: {
           light: (p.bg && p.bg.light) || {},
           dark: (p.bg && p.bg.dark) || {},
@@ -127,9 +131,32 @@ function PU_settings(React, h) {
       return function () { self.subs = self.subs.filter(function (f) { return f !== fn; }); };
     },
   };
-  /* 用 rev + useSyncExternalStore 的写法保证重渲染可靠。
+  /* ---------------- 侧栏「更多」显隐同步 ----------------
+     把 store.value.hideSidebarMore 写成 <html data-pus-hide-more="1">，
+     由 MODEL_CSS/CSS 里的属性选择器决定是否隐藏那个按钮。
+     用属性而非直接改 DOM：宿主会重渲染侧栏，改过的节点会被重建，
+     而属性挂在 documentElement 上，重渲染不影响。 */
+  function syncSidebarMore() {
+    try {
+      if (typeof document === 'undefined') return;
+      var root = document.documentElement;
+      if (!root) return;
+      if (store.value.hideSidebarMore === true) {
+        root.setAttribute('data-pus-hide-more', '1');
+      } else {
+        root.removeAttribute('data-pus-hide-more');
+      }
+    } catch (e) { /* 静默：属性写失败只是显隐不生效，不影响其它功能 */ }
+  }
+
+    /* 用 rev + useSyncExternalStore 的写法保证重渲染可靠。
      ⚠ subscribe/getSnapshot 必须是**稳定引用**（模块级函数），不能每渲染新建箭头函数 ——
      否则 useSyncExternalStore 每次渲染都会退订再重订一轮，白白重分配 subs 数组。 */
+  /* 立即同步一次：首屏就按已保存的偏好隐藏，避免闪一下再消失。 */
+  syncSidebarMore();
+  /* 订阅：用户拨开关后即时生效（store.set 会同步遍历订阅者）。 */
+  store.subscribe(syncSidebarMore);
+
   function subPrefs(cb) { return store.subscribe(cb); }
   function snapPrefs() { return store.rev; }
   function usePrefs() {
@@ -554,6 +581,7 @@ function PU_settings(React, h) {
         row('deleteSession', '删除会话', '会话右键菜单里的「删除会话」，以及右键直接打开会话菜单。'),
         row('modelStyle', '模型修改样式', '把输入框的模型选择器改成两行（强度 + 模型名），并提供推理强度滑块。关掉即恢复宿主原生单行样式。'),
         row('skillMarket', '技能市场', '侧栏的技能市场入口与面板（浏览 / 安装 SkillHub 技能）。'),
+        row('hideSidebarMore', '隐藏侧栏「更多」', '把侧栏面板列表里的「更多」按钮收起。收起后该面板入口不再显示，其它入口不受影响。'),
         /* 这条说明只属于「插件开关」这个 TAB（讲开关的语义边界），
            放在 TAB 面板内部，切到背景颜色/插件推荐时不显示。 */
         h('div', { className: 'pus-note2' },
@@ -755,6 +783,19 @@ function PU_settings(React, h) {
   }
 
   var CSS = [
+    /* ---- 隐藏侧栏「更多」按钮（开关：hideSidebarMore）----
+       宿主结构（asar 内 dsh-client-ui-sidebar 确证）：
+         div.<hash>_moreAnchor
+           └─ button.panelRow[aria-label="更多"][aria-haspopup="menu"]
+                └─ span.<hash>_panelGlyph + span.<hash>_panelTitle
+       用 [class*="moreAnchor"] 而非精确类名：宿主构建期哈希前缀
+       （wtg9ga_ / AnXs9G_ 之类）每次升级都可能变，子串匹配更耐久。
+       html[data-pus-hide-more] 由下方 syncMore() 按 store 写入。 */
+    'html[data-pus-hide-more] div[class*="moreAnchor"]{display:none !important}',
+    /* 兜底：万一 moreAnchor 类名结构变了，用语义属性再兜一层。
+       :has() 在 Chromium 105+ 可用；不支持时这条静默失效，不影响上一条。 */
+    'html[data-pus-hide-more] button[aria-haspopup="menu"]:has(> span[class*="panelGlyph"]):has(> span[class*="panelTitle"]){display:none !important}',
+    'html[data-pus-hide-more] div:has(> button[aria-label="更多"][aria-haspopup="menu"]){display:none !important}',
     /* 下内边距改为 0（用户要求）。简写顺序为上/左右/下：4px 2px 0 */
     '.pus-page{padding:4px 2px 0;max-width:760px}',
     /* 宿主设置面板容器：**只**把下内边距设为 0（用户要求）。
@@ -959,6 +1000,10 @@ function PU_settings(React, h) {
     /* 设置页注册：官方整页座位 */
     install: function (c) {
       var offs = [];
+      /* ⚠ 首屏同步：必须在注入 <style> **之前**设置属性。
+         属性已在、样式一到即生效 → 用户看不到「更多」闪一下再消失。
+         syncSidebarMore 在工厂体内定义，此处已可访问。 */
+      try { syncSidebarMore(); } catch (e) { /* 静默 */ }
       if (typeof document !== 'undefined') {
         var id = PU_PLUGIN_ID + '/settings.css';
         var tag = document.querySelector('style[data-plugin-css="' + id + '"]');

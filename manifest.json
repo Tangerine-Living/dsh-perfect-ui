@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "dsh-perfect-ui",
-  "version": "2.68.53",
+  "version": "2.68.55",
   "display_name": "橘小黑工作台",
   "description": "给 DeepSeek Harness 换一套顺眼的配色（默认薄荷绿，深浅色自动跟随），并补上几个原生没有的实用入口：账户余额、工作区一键运行、会话快速删除、技能市场。所有原生日志、输入框、消息流都保持原样不动，每项功能都能在设置页单独关闭。",
   "A_主题层": {
