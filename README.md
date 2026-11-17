@@ -10,6 +10,8 @@
 - **跟随系统** — 浅色 / 深色 / 跟随系统，自动切换
 - **背景可自定义** — 在设置页调整，一键恢复默认
 - **卸载即还原** — 关闭插件后界面立刻回到原生外观
+<img width="1411" height="904" alt="image" src="https://github.com/user-attachments/assets/f257cec1-5549-4a8a-867c-965ea24ce183" />
+<img width="478" height="222" alt="image" src="https://github.com/user-attachments/assets/edd111ab-b8c1-4180-b01f-0e9ef15a0aca" />
 
 ### 功能
 
@@ -23,6 +25,9 @@
 | **隐藏侧栏「更多」** | 收起侧栏面板列表里的「更多」按钮 | **关** |
 
 以上功能都能在 **设置 → 橘小黑工作台 → 插件开关** 逐项开启或关闭，改动即时生效，无需重启。
+<img width="658" height="637" alt="image" src="https://github.com/user-attachments/assets/5d1b03fc-fa90-41f6-92f0-cf395a4998a7" />
+<img width="680" height="729" alt="image" src="https://github.com/user-attachments/assets/bc4765bb-301f-4680-b1f5-a80029bc951d" />
+<img width="686" height="474" alt="image" src="https://github.com/user-attachments/assets/f4fa0311-6ba7-44be-8404-c23f02803667" />
 
 ## 设计原则
 
