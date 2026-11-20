@@ -5833,10 +5833,11 @@ body[data-ds-dark-theme] [data-skill-market] {
         const info = pluginUpdates.info
         const mode = info === null || info === undefined ? '' : (info.updateMode || '')
         const isLink = mode === 'link'
-        /* 只有 registry 安装能由宿主 updateBundle 推（它要求目标版本严格大于已装版本）；
-           Git/link 安装没有可推的版本，只如实说明。 */
+        /* registry 安装由宿主 updateBundle 推；Git 安装也能推——但要由 Host 现算
+           「最新 tag 的完整 commit」当 spec（客户端不需要任何 token，也不传 spec，
+           免得被前端伪造）。link 安装没有版本可升级，只如实说明。 */
         const canInstall = info !== null && info !== undefined && info.canUpdate === true
-          && mode === 'registry'
+          && (mode === 'registry' || mode === 'git')
         const kindText = mode === 'registry' ? 'registry' : mode === 'git' ? 'Git' : (isLink ? 'link' : '本地')
         /* Closing the list also hides the strip: the user has just read it, so
            repeating the same notice underneath would be noise. The top-bar
@@ -5853,7 +5854,7 @@ body[data-ds-dark-theme] [data-skill-market] {
                 ? (isLink
                   ? '本地 link 安装 · 远端最新 v' + info.latest + '，git pull 后重新构建即可'
                   : (mode === 'git'
-                    ? '可更新到 v' + info.latest + '（Git 安装，需重新安装该插件）'
+                    ? '可更新到 v' + info.latest + '（Git 安装 · 钉 tag commit 原地更新）'
                     : '可更新 v' + info.installed + ' → v' + info.latest))
                 : '已是最新' + (info.latest ? '（远端 v' + info.latest + '）' : '')
           rows.push(h('div', { className: 'sm-pu-row' + (info.canUpdate === true ? '' : ' is-clean'), key: 'self' },

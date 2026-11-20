@@ -42,7 +42,7 @@ const SELF_PACKAGE = '@local/dsh-perfect-ui'
 const SELF_REPO_FALLBACK = 'https://github.com/Tangerine-Living/dsh-perfect-ui.git'
 const SELF_TTL = 30 * 60 * 1000        /* 成功结果缓存 30 分钟 */
 const SELF_ERR_TTL = 60 * 1000         /* 失败结果只缓存 1 分钟，网络恢复能马上反映 */
-let selfCache = { at: 0, latest: '', error: '' }
+let selfCache = { at: 0, latest: '', sha: '', error: '' }
 
 /** 与客户端同源的围栏：只接受本机回环、非跨站请求。 */
 function trustedLocal(req) {
@@ -453,24 +453,59 @@ export function latestTagVersion(text) {
   return best
 }
 
-/** 查本插件最新 tag（带缓存；force=true 绕过）。返回 { latest, error }，不抛错。 */
+/** 从 ls-remote 输出里取某个 tag 指向的完整 commit。
+ *  宿主的 Git 更新（planGitUpdate）只接受**钉到 40 位 commit** 的 spec，
+ *  所以这里必须给出完整 sha，不能用 tag 名。注解 tag 的值在 `<tag>^{}` 那行。 */
+export function tagCommit(text, version) {
+  const v = String(version || '').trim()
+  if (!v) return ''
+  const wants = [`refs/tags/v${v}^{}`, `refs/tags/v${v}`, `refs/tags/${v}^{}`, `refs/tags/${v}`]
+  const plain = new Map()
+  for (const line of String(text || '').split('\n')) {
+    const parts = line.trim().split(/\s+/u)
+    if (parts.length < 2 || !/^[0-9a-f]{40}$/iu.test(parts[0])) continue
+    const which = wants.indexOf(parts[1])
+    if (which < 0) continue
+    if (which === 0 || which === 2) return parts[0]
+    if (!plain.has(parts[1])) plain.set(parts[1], parts[0])
+  }
+  return plain.get(wants[1]) || plain.get(wants[3]) || ''
+}
+
+/** 把仓库地址 + 完整 commit 拼成宿主认识的 Git spec。
+ *  github 仓库用 `github:owner/repo#<sha>` 简写（与用户装插件时输入的形式一致），
+ *  其它地址用 `<url>#<sha>`；两者经 pinnedGitOrigin 归一后与已装来源同一 origin。 */
+export function selfUpdateSpec(repoUrl, sha) {
+  if (!/^[0-9a-f]{40}$/iu.test(String(sha || ''))) return ''
+  const url = String(repoUrl || '').trim().replace(/\.git$/iu, '')
+  const gh = /^https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)$/iu.exec(url)
+  if (gh) return `github:${gh[1]}#${sha}`
+  const bare = /^([\w.-]+\/[\w.-]+)$/u.exec(url)
+  if (bare) return `github:${bare[1]}#${sha}`
+  if (/^https?:\/\//u.test(url)) return `${url}#${sha}`
+  return ''
+}
+
+/** 查本插件最新 tag（带缓存；force=true 绕过）。返回 { latest, sha, error }，不抛错。 */
 async function selfLatestVersion(force) {
   if (!force) {
     const ttl = selfCache.error ? SELF_ERR_TTL : SELF_TTL
     if (selfCache.at && Date.now() - selfCache.at < ttl) {
-      return { latest: selfCache.latest, error: selfCache.error }
+      return { latest: selfCache.latest, sha: selfCache.sha, error: selfCache.error }
     }
   }
   const url = normalizeRepoUrl(readSelfMeta().repository)
   try {
-    const latest = latestTagVersion(await gitRemoteTags(url))
+    const text = await gitRemoteTags(url)
+    const latest = latestTagVersion(text)
     if (!latest) throw new Error('远端没有形如 vX.Y.Z 的 tag')
-    selfCache = { at: Date.now(), latest, error: '' }
-    return { latest, error: '' }
+    const sha = tagCommit(text, latest)
+    selfCache = { at: Date.now(), latest, sha, error: '' }
+    return { latest, sha, error: '' }
   } catch (e) {
     const error = errText(e)
-    selfCache = { at: Date.now(), latest: selfCache.latest, error }
-    return { latest: selfCache.latest, error }
+    selfCache = { at: Date.now(), latest: selfCache.latest, sha: selfCache.sha, error }
+    return { latest: selfCache.latest, sha: selfCache.sha, error }
   }
 }
 
@@ -611,17 +646,37 @@ export function registerPluginRoutes(ctx) {
       if (!before.installed) return send(res, 200, { ok: false, error: `未安装 ${name}，请先安装` })
       /* 目标版本由 Host 自己按官方口径算，不采信前端传值（避免装到不兼容的版本）。 */
       const upd = updateSummary(before.row, await readVersionList(pm, name))
-      if (!upd.canUpdate) {
+      /* ---- Git 安装走宿主自带的 Git 更新路（updateBundle + 钉 commit 的 spec）----
+         官方客户端对 Git 包不给更新入口，但 updateBundle 本身支持，前提由
+         planGitUpdate 保证：目标版本要 semver.gt 已装版本，spec 必须钉到
+         **完整 40 位 commit**，且其 origin 与已装来源同一仓库。
+         这里不需要任何 token：版本与 commit 都从 git ls-remote 的公开读取来。 */
+      let target = upd.latest
+      let options = {}
+      if (!upd.canUpdate && upd.offered === 'git') {
+        if (name !== SELF_PACKAGE) {
+          return send(res, 200, {
+            ok: false,
+            error: '这是 Git 安装的其他插件：本入口只更新本插件，请在插件市场重新安装它来更新',
+          })
+        }
+        const remote = await selfLatestVersion(true)
+        if (!remote.latest) return send(res, 200, { ok: false, error: remote.error || '远端没有可用的版本 tag' })
+        if (!versionGt(remote.latest, before.version)) {
+          return send(res, 200, { ok: false, error: `已是最新（v${before.version}）` })
+        }
+        const spec = selfUpdateSpec(normalizeRepoUrl(readSelfMeta().repository), remote.sha)
+        if (!spec) return send(res, 200, { ok: false, error: `读不到 tag v${remote.latest} 的完整 commit，无法钉住更新目标` })
+        target = remote.latest
+        options = { spec }
+      } else if (!upd.canUpdate) {
         const why = upd.blocked.length
           ? `没有可安装的更新：${upd.blocked.map((b) => `v${b.version} ${b.reason}`).join('，')}`
-          : (upd.offered === 'git'
-            ? '该插件来自 Git 安装，更新需重新安装'
-            : '已是最新版本（或该插件随 DSH 版本更新）')
+          : '已是最新版本（或该插件随 DSH 版本更新）'
         return send(res, 200, { ok: false, error: why, blocked: upd.blocked })
       }
-      const target = upd.latest
       try {
-        const answer = await pm.updateBundle(name, target, {})
+        const answer = await pm.updateBundle(name, target, options)
         const result = (answer && answer.result) || null
         const application = result && result.application
         if (application !== 'applied' && application !== 'restart-required') {
@@ -681,13 +736,19 @@ export function registerPluginRoutes(ctx) {
       }
       const remote = await selfLatestVersion(force)
       const canUpdate = installed !== '' && remote.latest !== '' && versionGt(remote.latest, installed)
+      /* Git 安装的一键更新 spec：宿主 planGitUpdate 要求目标 spec 钉到完整 commit，
+         且其 origin 必须与已装来源同一个仓库。所以这里给的就是「同一仓库 + 最新 tag 的 commit」。
+         检测本身不需要任何 token（git ls-remote 读公共仓库是匿名可读的）。 */
+      const updateSpec = updateMode === 'git' && canUpdate ? selfUpdateSpec(repoUrl, remote.sha) : ''
       return send(res, 200, {
         ok: true,
         name: meta.name,
         installed,
         latest: remote.latest,
+        latestSha: remote.sha,
         canUpdate,
         updateMode,
+        updateSpec,
         repoUrl,
         checkedAt: new Date().toISOString(),
         error: remote.error,

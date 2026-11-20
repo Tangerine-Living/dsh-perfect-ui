@@ -509,13 +509,14 @@ function PU_settings(React, h) {
     checkSelfUpdate(false);
   }
 
-  /* 更新本插件：只有 registry / git 安装才是宿主 updateBundle 能推的（它要求目标版本
-     严格大于已装版本）；link 安装直接给出可执行的做法，不假装能一键升级。 */
+  /* 更新本插件：registry 与 Git 安装都由宿主 updateBundle 推（后者由 Host 现算
+     最新 tag 的完整 commit 当 spec，客户端只发 name）；link 安装给出可执行的做法，
+     不假装能一键升级。 */
   function updateSelf() {
     var st = recGet(ALL_UPD);
     var info = st.info || {};
     var mode = info.updateMode || '';
-    if (mode !== 'registry') return;
+    if (mode !== 'registry' && mode !== 'git') return;
     recSet(ALL_UPD, { phase: 'done', error: '', info: info, busy: true, note: '正在更新…', noteErr: false });
     pluginApi('/update', {
       method: 'POST',
@@ -544,7 +545,7 @@ function PU_settings(React, h) {
     var info = st.info || null;
     var mode = info ? (info.updateMode || '') : '';
     var canUpdate = !!(info && info.canUpdate);
-    var canInstall = canUpdate && mode === 'registry';
+    var canInstall = canUpdate && (mode === 'registry' || mode === 'git');
     var kindText = mode === 'registry' ? 'registry' : (mode === 'git' ? 'Git' : (mode === 'link' ? 'link' : '本地'));
     var summary = '';
     if (phase === 'error') {
@@ -558,7 +559,7 @@ function PU_settings(React, h) {
     } else if (canUpdate) {
       summary = '当前 v' + info.installed + ' · 可更新到 v' + info.latest;
       if (mode === 'link') summary += '（本地 link 安装：git pull 后重新构建即可）';
-      else if (mode === 'git') summary += '（Git 安装，需重新安装该插件）';
+      else if (mode === 'git') summary += '（Git 安装 · 钉 tag commit 原地更新）';
     } else {
       summary = '当前 v' + (info.installed || '?') + ' · 已是最新' + (info.latest ? '（远端 v' + info.latest + '）' : '');
     }
@@ -573,7 +574,7 @@ function PU_settings(React, h) {
             ? (mode === 'link'
               ? '仓库：' + (info.repoUrl || '') + ' · 本地 link 安装没有版本可升级'
               : (mode === 'git'
-                ? '可更新到 v' + info.latest + '（Git 安装，需重新安装该插件）'
+                ? '可更新到 v' + info.latest + '（Git 安装 · 钉 tag commit 原地更新）'
                 : '可更新 v' + info.installed + ' → v' + info.latest))
             : (info.error ? '检测失败，可点「重新检测」再试' : '无需更新')))),
       canInstall

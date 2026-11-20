@@ -4,6 +4,24 @@
 
 ---
 
+## v2.68.60 — 2026-11-20
+
+### 变更
+
+- **Git / GitHub 安装也能一键更新** —— 之前只有 registry 安装给「更新」按钮，Git 安装只提示「需重新安装」。
+  现在 Host 会自己现算目标：`git ls-remote` 取最新正式 tag，并取该 tag 指向的**完整 40 位 commit**，
+  拼成 `github:owner/repo#<sha>` 交给宿主 `updateBundle(name, version, { spec })`。
+  - 为什么必须钉 commit：宿主 `planGitUpdate` 原文「updates only to a Git spec pinned to a full commit」，
+    且要求 spec 的 origin 与已装来源同一仓库；只给 tag 名会被拒（`invalid-spec`）。
+  - 全程**不需要任何 token**：检测与更新都只匿名读公共仓库的 tag 列表，更新的拉取由 pnpm 自己完成。
+  - 客户端仍然只发 `{ name }`，spec 一律由 Host 算，避免前端伪造更新来源。
+- **`/self` 增加 `latestSha` 与 `updateSpec`** —— `updateSpec` 只在「Git 安装 + 确有新版本」时非空；
+  link 安装仍如实说明「git pull 后重新构建」，不假装能一键升级。
+- **面板文案** —— Git 安装的可更新提示从「需重新安装该插件」改为「钉 tag commit 原地更新」，
+  两处入口（设置 → 工作台、技能市场顶栏）口径一致。
+
+---
+
 ## v2.68.59 — 2026-11-20
 
 ### 变更
