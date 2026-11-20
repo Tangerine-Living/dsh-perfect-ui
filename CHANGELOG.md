@@ -4,6 +4,26 @@
 
 ---
 
+## v2.68.59 — 2026-11-20
+
+### 变更
+
+- **「检测更新」改为检测本插件自身** —— 检测对象是 `@local/dsh-perfect-ui`（橘小黑工作台）自己，
+  不再是推荐列表里的三方插件。设置 → 工作台 → 插件 与 技能市场顶栏两处入口口径一致。
+  - 已装版本：读本插件目录的 `package.json`（正在跑的那一份源码）
+  - 最新版本：读仓库 tag（`git ls-remote --tags`，不依赖 GitHub API 限流；结果缓存 30 分钟，`?force=1` 绕过）
+  - registry / Git 安装：面板给「更新」按钮（复用宿主 `updateBundle`，目标版本由 Host 自算）
+  - 本地 `link:` 安装：如实说明「远端最新 vX，git pull 后重新构建即可」，不假装能一键升级
+  - 技能市场：有新版时顶栏按钮变强调色 + 圆点角标，下方出现一条「橘小黑工作台有新版本 vX · 查看」提示条
+- **Host 新增 `GET /api/dsh-perfect-ui-plugins/self`** —— 返回
+  `{ name, installed, latest, canUpdate, updateMode, repoUrl, checkedAt, error }`；
+  `updateMode` 取 `registry` / `git` / `link` / `pinned`，决定客户端给不给「更新」按钮
+
+### 修复
+
+- **package.json 的 repository / homepage / bugs 还是占位符 `<你的用户名>`** —— 已填成真实仓库地址。
+  这会让自检去访问一个不存在的仓库（返回 400），检测永远失败却看不出原因。
+
 ## v2.68.58 — 2026-11-20
 
 ### 新增

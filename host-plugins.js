@@ -31,8 +31,18 @@
  */
 
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const PLUGIN_BASE = '/api/dsh-perfect-ui-plugins'
+
+/** 本插件自己的名字与仓库：用于「检测本插件更新」。
+ *  仓库地址优先取 package.json 的 repository（换账号/改名都不用改代码）。 */
+const SELF_PACKAGE = '@local/dsh-perfect-ui'
+const SELF_REPO_FALLBACK = 'https://github.com/Tangerine-Living/dsh-perfect-ui.git'
+const SELF_TTL = 30 * 60 * 1000        /* 成功结果缓存 30 分钟 */
+const SELF_ERR_TTL = 60 * 1000         /* 失败结果只缓存 1 分钟，网络恢复能马上反映 */
+let selfCache = { at: 0, latest: '', error: '' }
 
 /** 与客户端同源的围栏：只接受本机回环、非跨站请求。 */
 function trustedLocal(req) {
@@ -354,6 +364,111 @@ function versionGt(a, b) {
   return x.pre > y.pre               /* 预发布之间粗比较，够用 */
 }
 
+/** 读本插件自己的 package.json（name / version / repository）。
+ *  不能从 profile 的 node_modules 读：那是 junction/link，指向的可能不是这份源码。 */
+function readSelfMeta() {
+  const fallback = { name: SELF_PACKAGE, version: '', repository: '' }
+  try {
+    const file = fileURLToPath(new URL('./package.json', import.meta.url))
+    const pkg = JSON.parse(readFileSync(file, 'utf8'))
+    const repo = typeof pkg.repository === 'string'
+      ? pkg.repository
+      : (pkg.repository && typeof pkg.repository.url === 'string' ? pkg.repository.url : '')
+    return {
+      name: typeof pkg.name === 'string' && pkg.name ? pkg.name : SELF_PACKAGE,
+      version: typeof pkg.version === 'string' ? pkg.version : '',
+      repository: repo,
+    }
+  } catch { return fallback }
+}
+
+/** 把各种仓库写法归一成可 ls-remote 的 URL。 */
+function normalizeRepoUrl(repository) {
+  let url = String(repository || '').trim().replace(/^git\+/u, '')
+  if (!url) return SELF_REPO_FALLBACK
+  const gh = /^github:([^#\s]+)/u.exec(url)
+  if (gh) return `https://github.com/${gh[1].replace(/\.git$/u, '')}.git`
+  if (/^[\w.-]+\/[\w.-]+$/u.test(url)) return `https://github.com/${url}.git`
+  if (/^https?:\/\//u.test(url)) return /\.git$/u.test(url) ? url : `${url}.git`
+  return url
+}
+
+/** 读远端 tag 列表（10s 超时）。只看 tag，不需要 API token、也没有 rate limit。 */
+function gitRemoteTags(url) {
+  return new Promise((resolve, reject) => {
+    let child
+    try {
+      child = spawn('git', ['ls-remote', '--tags', url], {
+        windowsHide: true,
+        shell: false,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      })
+    } catch (e) {
+      reject(new Error(`无法运行 git：${errText(e)}`))
+      return
+    }
+    let out = ''
+    let err = ''
+    let settled = false
+    const finish = (fn, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      fn(value)
+    }
+    const timer = setTimeout(() => {
+      try { child.kill() } catch { /* 已退出 */ }
+      finish(reject, new Error('git ls-remote 超时（10s）'))
+    }, 10000)
+    child.stdout.on('data', (d) => { out += String(d) })
+    child.stderr.on('data', (d) => { err += String(d) })
+    child.on('error', (e) => finish(reject, new Error(`无法运行 git（${e.code || errText(e)}）`)))
+    child.on('close', (code) => {
+      if (code !== 0) {
+        const last = (err || '').trim().split('\n').filter(Boolean).pop() || `git 退出码 ${code}`
+        finish(reject, new Error(last))
+        return
+      }
+      if (out.trim() === '') { finish(reject, new Error('远端仓库没有 tag')); return }
+      finish(resolve, out)
+    })
+  })
+}
+
+/** 从 ls-remote 输出里挑出最大的 semver tag（v2.68.58 → 2.68.58；丢弃非版本 tag 与 peel 行）。 */
+function latestTagVersion(text) {
+  let best = ''
+  for (const line of String(text || '').split('\n')) {
+    const parts = line.trim().split(/\s+/u)
+    if (parts.length < 2 || !parts[1].startsWith('refs/tags/')) continue
+    const ref = parts[1].slice('refs/tags/'.length).replace(/\^\{\}$/u, '').replace(/^v/u, '')
+    if (!parseVersion(ref)) continue
+    if (best === '' || versionGt(ref, best)) best = ref
+  }
+  return best
+}
+
+/** 查本插件最新 tag（带缓存；force=true 绕过）。返回 { latest, error }，不抛错。 */
+async function selfLatestVersion(force) {
+  if (!force) {
+    const ttl = selfCache.error ? SELF_ERR_TTL : SELF_TTL
+    if (selfCache.at && Date.now() - selfCache.at < ttl) {
+      return { latest: selfCache.latest, error: selfCache.error }
+    }
+  }
+  const url = normalizeRepoUrl(readSelfMeta().repository)
+  try {
+    const latest = latestTagVersion(await gitRemoteTags(url))
+    if (!latest) throw new Error('远端没有形如 vX.Y.Z 的 tag')
+    selfCache = { at: Date.now(), latest, error: '' }
+    return { latest, error: '' }
+  } catch (e) {
+    const error = errText(e)
+    selfCache = { at: Date.now(), latest: selfCache.latest, error }
+    return { latest: selfCache.latest, error }
+  }
+}
+
 export function registerPluginRoutes(ctx) {
   if (!ctx || typeof ctx.webServer?.register !== 'function') return undefined
   return ctx.webServer.register({
@@ -528,6 +643,50 @@ export function registerPluginRoutes(ctx) {
       } catch (e) {
         return send(res, 200, { ok: false, error: `更新失败：${errText(e)}` })
       }
+    }
+
+    /* ---- 检测「本插件自身」更新 ----
+       与 /updates 的区别：这个端点只关心 @local/dsh-perfect-ui 自己。
+       版本来源两路：
+         已装版本 ← 本插件目录的 package.json（= 正在跑的这一份源码）
+         最新版本 ← 仓库 tag（git ls-remote --tags，不依赖 GitHub API 的 rate limit）
+       安装形态 updateMode 决定「能不能一键更新」：
+         registry / git → 宿主 updateBundle 可用
+         link           → 本地 link 安装，只能 git pull 后重新构建（不是故障） */
+    if (sub === '/self') {
+      if (req.method !== 'GET') return send(res, 405, { ok: false, error: 'method not allowed' })
+      let force = false
+      try { force = new URL(req.url ?? '/', 'http://x').searchParams.get('force') === '1' } catch { force = false }
+      const meta = readSelfMeta()
+      const repoUrl = normalizeRepoUrl(meta.repository)
+      let installed = meta.version
+      let updateMode = 'unknown'
+      if (pm && typeof pm.listBundles === 'function') {
+        try {
+          const raw = await pm.listBundles()
+          const rows = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.bundles) ? raw.bundles : [])
+          const row = rows.find((r) => r && r.name === meta.name)
+          if (row) {
+            if (typeof row.version === 'string' && row.version) installed = row.version
+            if (row.update === 'registry' || row.update === 'git') updateMode = row.update
+            else if (typeof row.source === 'string' && row.source.startsWith('link:')) updateMode = 'link'
+            else if (row.installed === true) updateMode = 'pinned'
+          }
+        } catch { /* 读不到就保持 unknown，不影响版本比对 */ }
+      }
+      const remote = await selfLatestVersion(force)
+      const canUpdate = installed !== '' && remote.latest !== '' && versionGt(remote.latest, installed)
+      return send(res, 200, {
+        ok: true,
+        name: meta.name,
+        installed,
+        latest: remote.latest,
+        canUpdate,
+        updateMode,
+        repoUrl,
+        checkedAt: new Date().toISOString(),
+        error: remote.error,
+      })
     }
 
     /* ---- 检测全部插件更新 ----

@@ -1557,6 +1557,8 @@ body[data-ds-dark-theme] [data-skill-market] {
   line-height: 15px; background: var(--sm-accent); color: var(--sm-surface);
 }
 [data-skill-market] .sm-btn-ghost.sm-pu-hit { color: var(--sm-accent); }
+/* 只有一个插件可检测，角标用圆点而不是数字 */
+[data-skill-market] .sm-pu-badge.sm-pu-dot { padding: 0; width: 7px; height: 7px; min-width: 7px; line-height: 0; }
 @keyframes sm-fade { from { opacity: 0 } to { opacity: 1 } }
 @keyframes sm-pop { from { opacity: 0; transform: translateY(6px) scale(.98) } to { opacity: 1; transform: none } }
 
@@ -3487,12 +3489,14 @@ body[data-ds-dark-theme] [data-skill-market] {
        * @type {[{kind: 'idle'} | {kind: 'installing', id: string, name: string} | {kind: 'failed', id: string, name: string, reason: string}, Function]}
        */
       const [installState, setInstallState] = React.useState({ kind: 'idle' })
-      /**
-       * [dsh-perfect-ui patch] Installed-plugin update check. The panel runs it
-       * by itself on mount (no button press), so this state is the *result*,
-       * not a "dialog open" flag: {phase:'running'|'done'|'error', items,
-       * counts, error, pending, notice}. `pluginUpdatesOpen` shows the list.
-       * Same Host endpoint as the workbench page, so both entries agree.
+/**
+       * [dsh-perfect-ui patch] Self update check for THIS plugin
+       * (`@local/dsh-perfect-ui`), not for the recommended third-party bundles:
+       * the button and the banner exist so the user learns about a newer
+       * 橘小黑工作台 itself. The panel runs it on mount (no button press), so
+       * this state is the *result*: {phase:'running'|'done'|'error', info,
+       * error, pending}. `pluginUpdatesOpen` shows the dialog.
+       * Same Host endpoint as the workbench page (`/self`), so both agree.
        * @type {[object|null, Function]}
        */
       const [pluginUpdates, setPluginUpdates] = React.useState(null)
@@ -3500,63 +3504,78 @@ body[data-ds-dark-theme] [data-skill-market] {
       const [pluginUpdatesDismissed, setPluginUpdatesDismissed] = React.useState(false)
       const pluginUpdatesBusy = React.useRef(false)
       /**
-       * [dsh-perfect-ui patch] Run the shared update check. Kept in a callback so
-       * the re-check button inside the dialog and the top-bar control share one
-       * guard: a second click while a check is in flight must be a no-op.
+       * [dsh-perfect-ui patch] Run the shared self-update check. Kept in a
+       * callback so the re-check button inside the dialog and the top-bar
+       * control share one guard: a second click while a check is in flight
+       * must be a no-op. `force` bypasses the Host side 30-minute cache.
        */
-      const checkPluginUpdates = React.useCallback(() => {
+      const checkPluginUpdates = React.useCallback((force) => {
         if (pluginUpdatesBusy.current) return
         pluginUpdatesBusy.current = true
-        setPluginUpdates({ phase: 'running', items: [], counts: {}, error: '' })
-        fetch('/api/dsh-perfect-ui-plugins/updates')
+        setPluginUpdates((previous) => ({
+          phase: 'running',
+          info: (previous && previous.info) || null,
+          error: '',
+          pending: null,
+        }))
+        fetch('/api/dsh-perfect-ui-plugins/self' + (force === true ? '?force=1' : ''))
           .then((response) => response.text().then((text) => {
             if (text === '' || text.trim() === '') throw new Error('空响应（HTTP ' + response.status + '）')
             return JSON.parse(text)
           }))
           .then((answer) => {
             if (answer === null || answer.ok !== true) throw new Error((answer && answer.error) || '检测失败')
-            const items = answer.items || []
-            const counts = answer.counts || {}
+            const info = {
+              name: answer.name || '@local/dsh-perfect-ui',
+              installed: answer.installed || '',
+              latest: answer.latest || '',
+              canUpdate: answer.canUpdate === true,
+              updateMode: answer.updateMode || 'unknown',
+              repoUrl: answer.repoUrl || '',
+              error: answer.error || '',
+              checkedAt: answer.checkedAt || '',
+            }
             /* Cache on window so reopening the panel within the TTL shows the
                last result at once instead of re-running git ls-remote. */
-            try { window.__dshPuUpdatesCache = { at: Date.now(), items, counts } } catch { /* ignore */ }
-            setPluginUpdates({ phase: 'done', items, counts, error: '' })
+            try { window.__dshPuSelfCache = { at: Date.now(), info } } catch { /* ignore */ }
+            setPluginUpdates({ phase: 'done', info, error: '', pending: null })
           })
           .catch((error) => {
-            setPluginUpdates({
+            setPluginUpdates((previous) => ({
               phase: 'error',
-              items: [],
-              counts: {},
+              info: (previous && previous.info) || null,
               error: '检测失败：' + ((error && error.message) || String(error)),
-            })
+              pending: null,
+            }))
           })
           .then(() => { pluginUpdatesBusy.current = false })
       }, [])
       /**
-       * [dsh-perfect-ui patch] Update one registry bundle from the dialog: the
-       * Host computes the target version itself (same口径 as the workbench),
-       * then the list re-runs so the row disappears once it is current.
+       * [dsh-perfect-ui patch] Update this plugin from the dialog. The Host
+       * computes the target version itself (same口径 as the workbench). Only
+       * registry / git installs are updatable this way; a local `link:`
+       * install has no versions to compare, so the dialog just says so.
+       * The outcome goes through the panel toast (the re-check right after
+       * would overwrite a notice kept in this state, and a toast outlives it).
        */
-      const applyPluginUpdate = React.useCallback((name) => {
-        setPluginUpdates((previous) => (previous === null ? previous : { ...previous, pending: name }))
+      const applyPluginUpdate = React.useCallback((info) => {
+        if (info === null || info === undefined) return
+        setPluginUpdates((previous) => (previous === null ? previous : { ...previous, pending: info.name }))
         fetch('/api/dsh-perfect-ui-plugins/update', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({ name: info.name }),
         })
           .then((response) => response.json())
           .then((answer) => {
             setPluginUpdates((previous) => (previous === null ? previous : { ...previous, pending: null }))
-            /* The result goes through the panel's toast rather than a line in
-               the dialog: the re-check right after would overwrite any notice
-               held in that state, and the toast outlives it. */
             setToast({
               id: Date.now(),
               message: answer && answer.ok
                 ? ((answer.message || '更新完成') + '，重启 DSH 后生效')
                 : ((answer && answer.error) || '更新失败'),
             })
-            checkPluginUpdates()
+            checkPluginUpdates(true)
           })
           .catch((error) => {
             setPluginUpdates((previous) => (previous === null ? previous : { ...previous, pending: null }))
@@ -3565,18 +3584,18 @@ body[data-ds-dark-theme] [data-skill-market] {
       }, [checkPluginUpdates])
       /**
        * [dsh-perfect-ui patch] Auto-detect: no button press. On mount, reuse a
-       * result younger than 5 minutes (window cache survives panel remounts),
-       * otherwise run the check. Errors stay quiet here — the dialog shows them
-       * only when the user opens it, so a failed check does not shout at someone
-       * who just wanted to browse skills.
+       * result younger than 5 minutes (the window cache survives panel
+       * remounts), otherwise run the check. Errors stay quiet here — the
+       * dialog shows them only when the user opens it, so a failed check does
+       * not shout at someone who just wanted to browse skills.
        */
       React.useEffect(() => {
-        const cached = window.__dshPuUpdatesCache
-        if (cached && Array.isArray(cached.items) && Date.now() - cached.at < 5 * 60 * 1000) {
-          setPluginUpdates({ phase: 'done', items: cached.items, counts: cached.counts || {}, error: '' })
+        const cached = window.__dshPuSelfCache
+        if (cached && cached.info && Date.now() - cached.at < 5 * 60 * 1000) {
+          setPluginUpdates({ phase: 'done', info: cached.info, error: '', pending: null })
           return
         }
-        checkPluginUpdates()
+        checkPluginUpdates(false)
       }, [])
       const contentRef = React.useRef(null)
       const searchRef = React.useRef(null)
@@ -5802,92 +5821,95 @@ body[data-ds-dark-theme] [data-skill-market] {
 
       /* ── assembly ────────────────────────────────────────────────────── */
 
-      /* [dsh-perfect-ui patch] Top-left entry: "check all plugin updates".
+/* [dsh-perfect-ui patch] Top-left entry: "check THIS plugin's own update".
          The panel itself only manages skills, so the Host route
-         /api/dsh-perfect-ui-plugins/updates is the shared detection path that
-         the workbench page uses too — registry entries compare versions, Git
-         entries compare the pinned commit with the remote HEAD. */
+         /api/dsh-perfect-ui-plugins/self (the same one the workbench page uses)
+         reports whether 橘小黑工作台 itself has a newer version: installed from
+         this plugin's package.json, latest from the repository tags.
+         registry / git installs get an「更新」button (宿主 updateBundle);
+         a local `link:` install only gets the honest instruction. */
       const renderPluginUpdates = () => {
         if (!pluginUpdatesOpen || pluginUpdates === null) return null
-        const items = pluginUpdates.items || []
-        const counts = pluginUpdates.counts || {}
-        const updatable = items.filter((item) => item.canUpdate === true)
-        const gitItems = items.filter((item) => item.kind === 'git')
+        const info = pluginUpdates.info
+        const mode = info === null || info === undefined ? '' : (info.updateMode || '')
+        const isLink = mode === 'link'
+        const canInstall = info !== null && info !== undefined && info.canUpdate === true
+          && (mode === 'registry' || mode === 'git')
+        const kindText = mode === 'registry' ? 'registry' : mode === 'git' ? 'Git' : (isLink ? 'link' : '本地')
         /* Closing the list also hides the strip: the user has just read it, so
            repeating the same notice underneath would be noise. The top-bar
            badge keeps the count, so the entry stays one click away. */
         const closing = () => { setPluginUpdatesOpen(false); setPluginUpdatesDismissed(true) }
         const rows = []
-        for (const item of updatable) {
-          const isGit = item.kind === 'git'
-          rows.push(h('div', { className: 'sm-pu-row', key: 'u-' + item.name },
+        if (info) {
+          const busy = pluginUpdates.pending === info.name
+          const note = pluginUpdates.phase === 'error'
+            ? '检测失败'
+            : info.error
+              ? '无法读取远端：' + info.error
+              : info.canUpdate === true
+                ? (isLink
+                  ? '本地 link 安装 · 远端最新 v' + info.latest + '，git pull 后重新构建即可'
+                  : '可更新 v' + info.installed + ' → v' + info.latest)
+                : '已是最新' + (info.latest ? '（远端 v' + info.latest + '）' : '')
+          rows.push(h('div', { className: 'sm-pu-row' + (info.canUpdate === true ? '' : ' is-clean'), key: 'self' },
             h('div', { className: 'sm-pu-rowmain' },
-              h('div', { className: 'sm-pu-name' }, item.name,
-                h('span', { className: 'sm-pu-kind' }, isGit ? 'Git' : 'registry')),
-              h('div', { className: 'sm-pu-note' }, isGit
-                ? '远端有新提交 ' + (item.pinned || '?') + ' → ' + item.latest + '（Git 安装，需重新安装该插件）'
-                : '可更新 v' + item.version + ' → v' + item.latest)),
-            (!isGit && item.canUpdate) ? h('button', {
+              h('div', { className: 'sm-pu-name' }, info.name || '@local/dsh-perfect-ui',
+                h('span', { className: 'sm-pu-kind' }, kindText)),
+              h('div', { className: 'sm-pu-note' }, note)),
+            canInstall ? h('button', {
               type: 'button',
               className: 'sm-btn sm-btn-primary sm-btn-sm',
-              disabled: pluginUpdates.pending === item.name,
-              onClick: () => applyPluginUpdate(item.name),
-            }, pluginUpdates.pending === item.name ? '更新中…' : '更新') : null))
-        }
-        for (const item of gitItems) {
-          if (item.canUpdate === true) continue
-          rows.push(h('div', { className: 'sm-pu-row is-clean', key: 'g-' + item.name },
-            h('div', { className: 'sm-pu-rowmain' },
-              h('div', { className: 'sm-pu-name' }, item.name, h('span', { className: 'sm-pu-kind' }, 'Git')),
-              h('div', { className: 'sm-pu-note' },
-                item.reason || ('已是最新提交' + (item.pinned ? '（' + item.pinned + '）' : ''))))))
+              disabled: busy,
+              onClick: () => applyPluginUpdate(info),
+            }, busy ? '更新中…' : '更新') : null))
         }
         const summary = pluginUpdates.phase === 'running'
-          ? '正在检测已安装插件（registry 查版本，Git 查远端提交）…'
+          ? (info && info.installed ? '当前 v' + info.installed + ' · 正在检测…' : '正在检测橘小黑工作台的最新版本…')
           : pluginUpdates.phase === 'error'
             ? pluginUpdates.error
-            : '已检测 ' + (counts.total !== undefined ? counts.total : 0) + ' 个已安装插件 · '
-              + (updatable.length ? updatable.length + ' 个可更新' : '全部是最新版本')
-              + (counts.git ? ' · Git 安装 ' + counts.git + ' 个' : '')
+            : info
+              ? '当前 v' + (info.installed || '?')
+                + (info.canUpdate === true ? ' · 可更新到 v' + info.latest : ' · 已是最新')
+              : ''
         return h('div', { className: 'sm-confirm-layer' },
           h('div', { className: 'sm-confirm-scrim', role: 'presentation', onClick: closing }),
           h('div', {
             className: 'sm-confirm sm-pu-card',
             role: 'dialog',
             'aria-modal': 'true',
-            'aria-label': '检测插件更新',
+            'aria-label': '橘小黑工作台更新',
           },
-            h('h2', { className: 'sm-confirm-title' }, '检测插件更新'),
+            h('h2', { className: 'sm-confirm-title' }, '橘小黑工作台更新'),
             h('p', { className: 'sm-confirm-body' + (pluginUpdates.phase === 'error' ? ' sm-pu-err' : '') }, summary),
-            pluginUpdates.notice ? h('p', { className: 'sm-confirm-detail' }, pluginUpdates.notice) : null,
             rows.length ? h('div', { className: 'sm-pu-list' }, rows) : null,
             h('div', { className: 'sm-confirm-actions' },
               h('button', {
                 type: 'button',
                 className: 'sm-btn sm-btn-secondary',
                 disabled: pluginUpdates.phase === 'running',
-                onClick: () => checkPluginUpdates(),
+                onClick: () => checkPluginUpdates(true),
               }, pluginUpdates.phase === 'running' ? '检测中…' : '重新检测'),
               h('button', { type: 'button', className: 'sm-btn sm-btn-primary', onClick: closing }, '关闭'))))
       }
 
       /* [dsh-perfect-ui patch] Auto-detected result, used by the top-bar badge
-         and the notice strip. Counted here so both agree on one number. */
-      const autoUpdatable = pluginUpdates !== null && Array.isArray(pluginUpdates.items)
-        ? pluginUpdates.items.filter((item) => item.canUpdate === true).length
-        : 0
+         and the notice strip: one boolean for one plugin. */
+      const selfHasUpdate = pluginUpdates !== null && pluginUpdates.info !== null
+        && pluginUpdates.info !== undefined && pluginUpdates.info.canUpdate === true
       const openPluginUpdates = () => {
         setPluginUpdatesOpen(true)
-        const cache = window.__dshPuUpdatesCache
+        const cache = window.__dshPuSelfCache
         const stale = !cache || Date.now() - cache.at > 5 * 60 * 1000
-        if (pluginUpdates === null || pluginUpdates.phase === 'error' || stale) checkPluginUpdates()
+        if (pluginUpdates === null || pluginUpdates.phase === 'error' || stale) checkPluginUpdates(false)
       }
-      /* The strip only appears when the automatic check found something and the
-         user has not dismissed it this session — detection without a popup. */
-      const pluginUpdatesNotice = autoUpdatable > 0 && !pluginUpdatesDismissed && !pluginUpdatesOpen
+      /* The strip only appears when the automatic check found a newer version
+         and the user has not dismissed it this session — detection without a popup. */
+      const pluginUpdatesNotice = selfHasUpdate && !pluginUpdatesDismissed && !pluginUpdatesOpen
         ? h('div', { className: 'sm-pu-stage' },
           h(Icon, { name: 'i-arrow-up-circle', size: 14 }),
-          h('span', { className: 'sm-pu-stage-text' }, autoUpdatable + ' 个插件有新版本'),
+          h('span', { className: 'sm-pu-stage-text' },
+            '橘小黑工作台有新版本 v' + (pluginUpdates.info.latest || '')),
           h('button', {
             type: 'button',
             className: 'sm-btn sm-btn-secondary sm-btn-sm',
@@ -5911,18 +5933,20 @@ body[data-ds-dark-theme] [data-skill-market] {
         h('header', { className: 'sm-topbar' },
           h('button', {
             type: 'button',
-            className: 'sm-btn sm-btn-ghost sm-btn-sm' + (autoUpdatable > 0 ? ' sm-pu-hit' : ''),
-            'aria-label': '检测插件更新',
+            className: 'sm-btn sm-btn-ghost sm-btn-sm' + (selfHasUpdate ? ' sm-pu-hit' : ''),
+            'aria-label': '检测本插件更新',
             title: pluginUpdates === null || pluginUpdates.phase !== 'done'
-              ? '检测全部插件更新'
-              : (autoUpdatable > 0 ? autoUpdatable + ' 个插件有新版本' : '全部插件是最新版本'),
+              ? '检测橘小黑工作台是否有新版本'
+              : (selfHasUpdate
+                ? '橘小黑工作台有新版本 v' + (pluginUpdates.info.latest || '')
+                : '橘小黑工作台已是最新版本'),
             onClick: () => {
               if (pluginUpdatesOpen) { setPluginUpdatesOpen(false); return }
               openPluginUpdates()
             },
           }, h(Icon, { name: 'i-arrow-up-circle', size: 16 }),
             h('span', { className: 'sm-btn-label' }, '检测更新'),
-            autoUpdatable > 0 ? h('span', { className: 'sm-pu-badge' }, autoUpdatable) : null),
+            selfHasUpdate ? h('span', { className: 'sm-pu-badge sm-pu-dot' }) : null),
           h('div', { className: 'sm-topbar-actions' },
             h('button', {
               type: 'button',

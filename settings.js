@@ -471,154 +471,130 @@ function PU_settings(React, h) {
     });
   }
 
-  /* ---------------- 检测全部插件更新 ----------------
-     官方只在插件市场里对 **registry** 安装的包判「可更新」；Git/GitHub 安装的
-     包连版本列表都没有，App.asar 原文：「<name> is installed from Git, which
-     lists no versions」—— 也就是说 DSH 从不比较远端有没有新提交。
-     这里补上这一层（口径见 Host 的 inspectBundle）：
-       registry → 官方 listVersions + updateSummary（与插件市场一致）
-       git      → git ls-remote 比对安装时钉住的提交（只报告，自动更新留给用户）
+/* ---------------- 检测本插件自身更新 ----------------
+     只关心 @local/dsh-perfect-ui 自己（= 这个界面所属的插件），不是推荐列表里的三方插件。
+     已装版本由 Host 读本插件目录的 package.json（正在跑的那一份），
+     最新版本由仓库 tag 得出（git ls-remote --tags，不依赖 GitHub API 的限流）。
+     安装形态决定能否一键更新：
+       registry / git → 宿主 updateBundle 可用，面板给「更新」按钮
+       link           → 本地 link 安装，只能 git pull 后重新构建（面板说明原因，不装作能更新）
      两处入口共用同一个端点：设置·工作台 / 技能市场顶栏。 */
-  var ALL_UPD = '__all_plugin_updates__';
+  var ALL_UPD = '__self_update__';
   /* 检测结果的时效：5 分钟内重复打开设置页不再重新联网（Git 那边要跑 ls-remote，
      重跑一次几秒；设置页每次打开都重跑会显得慢）。 */
   var ALL_UPD_TTL = 5 * 60 * 1000;
   var allUpdAt = 0;
 
-  function checkAllUpdates() {
+  function checkSelfUpdate(force) {
+    var st = recGet(ALL_UPD);
     allUpdAt = Date.now();
-    recSet(ALL_UPD, { phase: 'loading', error: '' });
-    pluginApi('/updates').then(function (d) {
+    recSet(ALL_UPD, { phase: 'loading', error: '', info: st.info || null, busy: false, note: '', noteErr: false });
+    pluginApi(force ? '/self?force=1' : '/self').then(function (d) {
       if (!d || !d.ok) {
-        recSet(ALL_UPD, { phase: 'error', error: (d && d.error) || '检测失败' });
+        recSet(ALL_UPD, { phase: 'error', error: (d && d.error) || '检测失败', info: st.info || null });
         return;
       }
-      recSet(ALL_UPD, {
-        phase: 'done',
-        error: '',
-        items: (d.items || []).slice(),
-        counts: d.counts || {},
-        at: d.checkedAt || '',
-      });
+      recSet(ALL_UPD, { phase: 'done', error: '', info: d, busy: false, note: '', noteErr: false });
     }).catch(function (e) {
-      recSet(ALL_UPD, { phase: 'error', error: '检测失败：' + ((e && e.message) || String(e)) });
+      recSet(ALL_UPD, { phase: 'error', error: '检测失败：' + ((e && e.message) || String(e)), info: st.info || null });
     });
   }
 
   /* 自动检测：设置页一打开就跑，不需要点按钮。
      正在跑（loading）或上次结果还新鲜（5 分钟内）就跳过，避免重复联网。 */
-  function autoCheckAllUpdates() {
+  function autoCheckSelfUpdate() {
     var st = recGet(ALL_UPD);
     if (st.phase === 'loading') return;
     if (st.phase === 'done' && Date.now() - allUpdAt < ALL_UPD_TTL) return;
-    checkAllUpdates();
+    checkSelfUpdate(false);
   }
 
-  /* 从检测结果里更新单个 registry 包：复用 /update（目标版本由 Host 按官方口径算）。 */
-  function updateFromAll(name) {
-    recSet(name, { phase: 'install', msg: '正在更新…', err: false });
+  /* 更新本插件：只有 registry / git 安装才是宿主 updateBundle 能推的（它要求目标版本
+     严格大于已装版本）；link 安装直接给出可执行的做法，不假装能一键升级。 */
+  function updateSelf() {
+    var st = recGet(ALL_UPD);
+    var info = st.info || {};
+    var mode = info.updateMode || '';
+    if (mode !== 'registry' && mode !== 'git') return;
+    recSet(ALL_UPD, { phase: 'done', error: '', info: info, busy: true, note: '正在更新…', noteErr: false });
     pluginApi('/update', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: name }),
+      body: JSON.stringify({ name: info.name }),
     }).then(function (d) {
       if (!d || !d.ok) {
-        recSet(name, { phase: 'done', err: true, msg: (d && d.error) || '更新失败' });
+        recSet(ALL_UPD, { phase: 'done', error: '', info: info, busy: false, note: (d && d.error) || '更新失败', noteErr: true });
         return;
       }
-      recSet(name, { phase: 'done', err: false, version: d.to || '', msg: (d.message || '更新完成') + '，重启 DSH 后生效' });
-      checkAllUpdates();
+      recSet(ALL_UPD, {
+        phase: 'done', error: '', info: info, busy: false,
+        note: (d.message || '更新完成') + '，重启 DSH 后生效', noteErr: false,
+      });
+      checkSelfUpdate(true);
     }).catch(function (e) {
-      recSet(name, { phase: 'done', err: true, msg: '更新异常：' + ((e && e.message) || String(e)) });
+      recSet(ALL_UPD, { phase: 'done', error: '', info: info, busy: false, note: '更新异常：' + ((e && e.message) || String(e)), noteErr: true });
     });
   }
 
-  /* 检测结果面板：**设置页一打开就自动检测**（见 autoCheckAllUpdates），
-       不需要点按钮；按钮只用于「重新检测」。
-       registry 可更新 → 直接给「更新」按钮（复用 /update）；
-       Git 安装的有新提交 → 只报告（自动更新需要先知道远端 package 版本，宿主要求
-       updateBundle 的 version 严格 semver 且高于当前，光有 commit 不够，故不代劳）。 */
-    function allUpdatesPanel() {
-      var st = recGet(ALL_UPD);
-      var phase = st.phase || 'idle';
-      var items = st.items || [];
-      var counts = st.counts || {};
-      var canList = items.filter(function (it) { return it.canUpdate; });
-      var gitItems = items.filter(function (it) { return it.kind === 'git'; });
-      var blockedItems = items.filter(function (it) { return it.blocked && it.blocked.length > 0; });
-      var rows = [];
+  /* 面板：**设置页一打开就自动检测**（见 autoCheckSelfUpdate），不需要点按钮；
+     按钮只用于「重新检测」。 */
+  function selfUpdatePanel() {
+    var st = recGet(ALL_UPD);
+    var phase = st.phase || 'idle';
+    var info = st.info || null;
+    var mode = info ? (info.updateMode || '') : '';
+    var canUpdate = !!(info && info.canUpdate);
+    var canInstall = canUpdate && (mode === 'registry' || mode === 'git');
+    var kindText = mode === 'registry' ? 'registry' : (mode === 'git' ? 'Git' : (mode === 'link' ? 'link' : '本地'));
+    var summary = '';
+    if (phase === 'error') {
+      summary = st.error || '检测失败';
+    } else if (!info) {
+      summary = phase === 'loading' ? '正在检测本插件的最新版本…' : '正在自动检测本插件的最新版本…';
+    } else if (phase === 'loading') {
+      summary = (info.installed ? '当前 v' + info.installed + ' · ' : '') + '正在检测最新版本…';
+    } else if (info.error) {
+      summary = (info.installed ? '当前 v' + info.installed + ' · ' : '') + '无法读取远端：' + info.error;
+    } else if (canUpdate) {
+      summary = '当前 v' + info.installed + ' · 可更新到 v' + info.latest;
+      if (mode === 'link') summary += '（本地 link 安装：git pull 后重新构建即可）';
+    } else {
+      summary = '当前 v' + (info.installed || '?') + ' · 已是最新' + (info.latest ? '（远端 v' + info.latest + '）' : '');
+    }
 
-      if (phase === 'done') {
-        canList.forEach(function (it) { rows.push(updRow(it)); });
-        blockedItems.forEach(function (it) {
-          if (it.canUpdate) return;
-          rows.push(h('div', { className: 'pus-upd-row', key: 'bk-' + it.name },
-            h('div', { className: 'pus-upd-rowmain' },
-              h('div', { className: 'pus-upd-name' }, it.name,
-                h('span', { className: 'pus-upd-kind' }, 'registry')),
-              h('div', { className: 'pus-upd-note' },
-                'v' + (it.blocked[0].version || '?') + ' ' + (it.blocked[0].reason || '不可安装')))));
-        });
-        gitItems.forEach(function (it) {
-          if (it.canUpdate) { rows.push(updRow(it)); return; }
-          rows.push(h('div', { className: 'pus-upd-row is-clean', key: 'git-' + it.name },
-            h('div', { className: 'pus-upd-rowmain' },
-              h('div', { className: 'pus-upd-name' }, it.name,
-                h('span', { className: 'pus-upd-kind' }, 'Git')),
-              h('div', { className: 'pus-upd-note' },
-                it.reason || ('已是最新提交' + (it.pinned ? '（' + it.pinned + '）' : ''))))));
-        });
-      }
-
-      var summary = '';
-      if (phase === 'done') {
-        summary = '已检测 ' + (counts.total !== undefined ? counts.total : items.length) + ' 个已安装插件';
-        summary += canList.length ? ' · ' + canList.length + ' 个可更新' : ' · 全部是最新版本';
-        if (counts.git) summary += ' · Git 安装 ' + counts.git + ' 个';
-        if (blockedItems.length) summary += ' · ' + blockedItems.length + ' 个更新被兼容性拦住';
-      } else if (phase === 'loading') {
-        summary = '正在检测已安装插件（registry 查版本，Git 查远端提交）…';
-      } else if (phase === 'error') {
-        summary = st.error || '检测失败';
-      } else {
-        summary = '正在自动检测已安装插件…（registry 比版本号，Git 比远端提交；只检测，不改动环境）';
-      }
-
-      return h('div', { className: 'pus-upd' },
-        h('div', { className: 'pus-upd-head' },
-          h('div', { className: 'pus-upd-main' },
-            h('div', { className: 'pus-upd-title' }, '检测全部插件更新'),
-            h('div', { className: 'pus-upd-sub' + (phase === 'error' ? ' is-err' : '') }, summary)),
-          h('button', {
+    var note = st.note || '';
+    var row = info ? h('div', { className: 'pus-upd-row' },
+      h('div', { className: 'pus-upd-rowmain' },
+        h('div', { className: 'pus-upd-name' }, info.name || '@local/dsh-perfect-ui',
+          h('span', { className: 'pus-upd-kind' }, kindText)),
+        h('div', { className: 'pus-upd-note' + (st.noteErr ? ' is-err' : '') },
+          note || (canUpdate
+            ? (mode === 'link'
+              ? '仓库：' + (info.repoUrl || '') + ' · 本地 link 安装没有版本可升级'
+              : '可更新 v' + info.installed + ' → v' + info.latest)
+            : (info.error ? '检测失败，可点「重新检测」再试' : '无需更新')))),
+      canInstall
+        ? h('button', {
             type: 'button',
-            className: 'pus-rec-btn',
-            disabled: phase === 'loading',
-            onClick: checkAllUpdates,
-          }, phase === 'loading' ? '检测中…' : (phase === 'done' ? '重新检测' : '立即检测'))),
-        rows.length ? h('div', { className: 'pus-upd-list' }, rows) : null);
-    }
+            className: 'pus-rec-btn is-update',
+            disabled: st.busy === true,
+            onClick: updateSelf,
+          }, st.busy === true ? '更新中…' : '更新')
+        : null) : null;
 
-    function updRow(it) {
-      var st = recGet(it.name);
-      var busy = st.phase === 'install';
-      var isGit = it.kind === 'git';
-      var note = isGit
-        ? 'Git 安装 · 远端有新提交 ' + (it.pinned || '?') + ' → ' + it.latest + '（需重新安装该插件）'
-        : '可更新 v' + it.version + ' → v' + it.latest;
-      return h('div', { className: 'pus-upd-row', key: it.name },
-        h('div', { className: 'pus-upd-rowmain' },
-          h('div', { className: 'pus-upd-name' }, it.name,
-            h('span', { className: 'pus-upd-kind' }, isGit ? 'Git' : 'registry')),
-          h('div', { className: 'pus-upd-note' + (st.err ? ' is-err' : '') }, st.msg || note)),
-        (!isGit && it.canUpdate)
-          ? h('button', {
-              type: 'button',
-              className: 'pus-rec-btn is-update',
-              disabled: busy,
-              onClick: function () { updateFromAll(it.name); },
-            }, busy ? '更新中…' : '更新')
-          : null);
-    }
+    return h('div', { className: 'pus-upd' },
+      h('div', { className: 'pus-upd-head' },
+        h('div', { className: 'pus-upd-main' },
+          h('div', { className: 'pus-upd-title' }, '橘小黑工作台更新'),
+          h('div', { className: 'pus-upd-sub' + (phase === 'error' ? ' is-err' : '') }, summary)),
+        h('button', {
+          type: 'button',
+          className: 'pus-rec-btn',
+          disabled: phase === 'loading',
+          onClick: function () { checkSelfUpdate(true); },
+        }, phase === 'loading' ? '检测中…' : '重新检测')),
+      row ? h('div', { className: 'pus-upd-list' }, row) : null);
+  }
 
     function Section() {
     usePrefs();
@@ -643,7 +619,7 @@ function PU_settings(React, h) {
       });
       /* 插件更新检测也自动跑（用户明确要求「自动检测，不要手动」）：
          5 分钟内重复打开不重跑，正在跑也不会重复发请求。 */
-      autoCheckAllUpdates();
+      autoCheckSelfUpdate();
       return function () {
         recSubs = recSubs.filter(function (f) { return f !== bump; });
         notifyPromoChanged = null;
@@ -805,7 +781,7 @@ function PU_settings(React, h) {
 
     function tabPlugins() {
       return h('div', { key: 't-plugins' },
-        allUpdatesPanel(),
+        selfUpdatePanel(),
         h('div', { className: 'pus-tip' },
           '配合本插件更好用的独立插件。点按钮会直接调宿主插件管理器安装，不用手动下载；已装的会显示版本。'),
         RECOMMEND.map(function (cat) {
