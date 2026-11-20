@@ -471,7 +471,141 @@ function PU_settings(React, h) {
     });
   }
 
-  function Section() {
+  /* ---------------- 检测全部插件更新 ----------------
+     官方只在插件市场里对 **registry** 安装的包判「可更新」；Git/GitHub 安装的
+     包连版本列表都没有，App.asar 原文：「<name> is installed from Git, which
+     lists no versions」—— 也就是说 DSH 从不比较远端有没有新提交。
+     这里补上这一层（口径见 Host 的 inspectBundle）：
+       registry → 官方 listVersions + updateSummary（与插件市场一致）
+       git      → git ls-remote 比对安装时钉住的提交（只报告，自动更新留给用户）
+     两处入口共用同一个端点：设置·工作台 / 技能市场顶栏。 */
+  var ALL_UPD = '__all_plugin_updates__';
+
+  function checkAllUpdates() {
+    recSet(ALL_UPD, { phase: 'loading', error: '' });
+    pluginApi('/updates').then(function (d) {
+      if (!d || !d.ok) {
+        recSet(ALL_UPD, { phase: 'error', error: (d && d.error) || '检测失败' });
+        return;
+      }
+      recSet(ALL_UPD, {
+        phase: 'done',
+        error: '',
+        items: (d.items || []).slice(),
+        counts: d.counts || {},
+        at: d.checkedAt || '',
+      });
+    }).catch(function (e) {
+      recSet(ALL_UPD, { phase: 'error', error: '检测失败：' + ((e && e.message) || String(e)) });
+    });
+  }
+
+  /* 从检测结果里更新单个 registry 包：复用 /update（目标版本由 Host 按官方口径算）。 */
+  function updateFromAll(name) {
+    recSet(name, { phase: 'install', msg: '正在更新…', err: false });
+    pluginApi('/update', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: name }),
+    }).then(function (d) {
+      if (!d || !d.ok) {
+        recSet(name, { phase: 'done', err: true, msg: (d && d.error) || '更新失败' });
+        return;
+      }
+      recSet(name, { phase: 'done', err: false, version: d.to || '', msg: (d.message || '更新完成') + '，重启 DSH 后生效' });
+      checkAllUpdates();
+    }).catch(function (e) {
+      recSet(name, { phase: 'done', err: true, msg: '更新异常：' + ((e && e.message) || String(e)) });
+    });
+  }
+
+  /* 检测结果面板：默认不自动检测（联网），点按钮才跑。
+       registry 可更新 → 直接给「更新」按钮（复用 /update）；
+       Git 安装的有新提交 → 只报告（自动更新需要先知道远端 package 版本，宿主要求
+       updateBundle 的 version 严格 semver 且高于当前，光有 commit 不够，故不代劳）。 */
+    function allUpdatesPanel() {
+      var st = recGet(ALL_UPD);
+      var phase = st.phase || 'idle';
+      var items = st.items || [];
+      var counts = st.counts || {};
+      var canList = items.filter(function (it) { return it.canUpdate; });
+      var gitItems = items.filter(function (it) { return it.kind === 'git'; });
+      var blockedItems = items.filter(function (it) { return it.blocked && it.blocked.length > 0; });
+      var rows = [];
+
+      if (phase === 'done') {
+        canList.forEach(function (it) { rows.push(updRow(it)); });
+        blockedItems.forEach(function (it) {
+          if (it.canUpdate) return;
+          rows.push(h('div', { className: 'pus-upd-row', key: 'bk-' + it.name },
+            h('div', { className: 'pus-upd-rowmain' },
+              h('div', { className: 'pus-upd-name' }, it.name,
+                h('span', { className: 'pus-upd-kind' }, 'registry')),
+              h('div', { className: 'pus-upd-note' },
+                'v' + (it.blocked[0].version || '?') + ' ' + (it.blocked[0].reason || '不可安装')))));
+        });
+        gitItems.forEach(function (it) {
+          if (it.canUpdate) { rows.push(updRow(it)); return; }
+          rows.push(h('div', { className: 'pus-upd-row is-clean', key: 'git-' + it.name },
+            h('div', { className: 'pus-upd-rowmain' },
+              h('div', { className: 'pus-upd-name' }, it.name,
+                h('span', { className: 'pus-upd-kind' }, 'Git')),
+              h('div', { className: 'pus-upd-note' },
+                it.reason || ('已是最新提交' + (it.pinned ? '（' + it.pinned + '）' : ''))))));
+        });
+      }
+
+      var summary = '';
+      if (phase === 'done') {
+        summary = '已检测 ' + (counts.total !== undefined ? counts.total : items.length) + ' 个已安装插件';
+        summary += canList.length ? ' · ' + canList.length + ' 个可更新' : ' · 全部是最新版本';
+        if (counts.git) summary += ' · Git 安装 ' + counts.git + ' 个';
+        if (blockedItems.length) summary += ' · ' + blockedItems.length + ' 个更新被兼容性拦住';
+      } else if (phase === 'loading') {
+        summary = '正在检测已安装插件（registry 查版本，Git 查远端提交）…';
+      } else if (phase === 'error') {
+        summary = st.error || '检测失败';
+      } else {
+        summary = 'registry 安装的比版本号，Git 安装的比远端提交；只检测，不会自动改动环境。';
+      }
+
+      return h('div', { className: 'pus-upd' },
+        h('div', { className: 'pus-upd-head' },
+          h('div', { className: 'pus-upd-main' },
+            h('div', { className: 'pus-upd-title' }, '检测全部插件更新'),
+            h('div', { className: 'pus-upd-sub' + (phase === 'error' ? ' is-err' : '') }, summary)),
+          h('button', {
+            type: 'button',
+            className: 'pus-rec-btn',
+            disabled: phase === 'loading',
+            onClick: checkAllUpdates,
+          }, phase === 'loading' ? '检测中…' : (phase === 'done' ? '重新检测' : '开始检测'))),
+        rows.length ? h('div', { className: 'pus-upd-list' }, rows) : null);
+    }
+
+    function updRow(it) {
+      var st = recGet(it.name);
+      var busy = st.phase === 'install';
+      var isGit = it.kind === 'git';
+      var note = isGit
+        ? 'Git 安装 · 远端有新提交 ' + (it.pinned || '?') + ' → ' + it.latest + '（需重新安装该插件）'
+        : '可更新 v' + it.version + ' → v' + it.latest;
+      return h('div', { className: 'pus-upd-row', key: it.name },
+        h('div', { className: 'pus-upd-rowmain' },
+          h('div', { className: 'pus-upd-name' }, it.name,
+            h('span', { className: 'pus-upd-kind' }, isGit ? 'Git' : 'registry')),
+          h('div', { className: 'pus-upd-note' + (st.err ? ' is-err' : '') }, st.msg || note)),
+        (!isGit && it.canUpdate)
+          ? h('button', {
+              type: 'button',
+              className: 'pus-rec-btn is-update',
+              disabled: busy,
+              onClick: function () { updateFromAll(it.name); },
+            }, busy ? '更新中…' : '更新')
+          : null);
+    }
+
+    function Section() {
     usePrefs();
     var p = store.value;
     var saved = React.useRef(null);
@@ -653,6 +787,7 @@ function PU_settings(React, h) {
 
     function tabPlugins() {
       return h('div', { key: 't-plugins' },
+        allUpdatesPanel(),
         h('div', { className: 'pus-tip' },
           '配合本插件更好用的独立插件。点按钮会直接调宿主插件管理器安装，不用手动下载；已装的会显示版本。'),
         RECOMMEND.map(function (cat) {
@@ -950,6 +1085,30 @@ function PU_settings(React, h) {
     '.pus-rec-btn.is-done{background:transparent;color:var(--dsw-alias-brand-primary,#209a72)}',
     /* 可更新时按钮转成实心强调色，和「重装」的描边态区分开 */
     '.pus-rec-btn.is-done.is-update{background:var(--dsw-alias-brand-primary,#209a72);color:#fff}',
+    /* ---------- 检测全部插件更新 ---------- */
+    '.pus-upd{margin:0 0 12px;padding:10px 12px;border-radius:12px;',
+    'background:var(--dsw-alias-bg-layer-2,#f4faf7);',
+    'border:1px solid rgba(32,154,114,.22)}',
+    '.pus-upd-head{display:flex;align-items:flex-start;gap:12px}',
+    '.pus-upd-main{flex:1;min-width:0}',
+    '.pus-upd-title{font-size:12.5px;font-weight:600}',
+    '.pus-upd-sub{margin-top:3px;font-size:11px;line-height:1.55;',
+    'color:var(--dsw-alias-label-secondary,#8f959e)}',
+    '.pus-upd-sub.is-err{color:#c62828}',
+    '.pus-upd-list{margin-top:8px;padding-top:8px;border-top:1px solid rgba(0,0,0,.07)}',
+    'body[data-ds-dark-theme] .pus-upd-list{border-top-color:rgba(255,255,255,.12)}',
+    '.pus-upd-row{display:flex;align-items:center;gap:10px}',
+    '.pus-upd-row+.pus-upd-row{margin-top:6px}',
+    '.pus-upd-row.is-clean{opacity:.72}',
+    '.pus-upd-rowmain{flex:1;min-width:0}',
+    '.pus-upd-name{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;',
+    'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.pus-upd-kind{flex:none;padding:1px 5px;border-radius:4px;font-size:9.5px;font-weight:600;',
+    'background:rgba(0,0,0,.07);color:var(--dsw-alias-label-secondary,#5c6b68)}',
+    'body[data-ds-dark-theme] .pus-upd-kind{background:rgba(255,255,255,.12);color:#c9d6d2}',
+    '.pus-upd-note{margin-top:2px;font-size:11px;line-height:1.5;',
+    'color:var(--dsw-alias-label-secondary,#8f959e);word-break:break-all}',
+    '.pus-upd-note.is-err{color:#c62828}',
     /* ---------- 广告（推广）位 ---------- */
     /* ---------- 广告 TAB 铺满 ----------
        TAB 面板高度由宿主的 .pus-panel 决定；这里让整条链

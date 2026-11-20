@@ -1521,6 +1521,27 @@ body[data-ds-dark-theme] [data-skill-market] {
 }
 [data-skill-market] .sm-btn-danger:hover { background: color-mix(in oklch, var(--sm-danger) 86%, var(--sm-fg)); }
 [data-skill-market] .sm-btn-danger:focus-visible { outline: 2px solid var(--sm-danger-soft); outline-offset: 2px; }
+
+/* [dsh-perfect-ui patch] "Check all plugin updates" dialog: same shell as the
+   confirmation dialog, just tall enough to list a few rows and scroll. */
+[data-skill-market] .sm-pu-card { width: min(520px, calc(100% - 40px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; }
+[data-skill-market] .sm-pu-list {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--sm-border);
+  overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 8px;
+}
+[data-skill-market] .sm-pu-row { display: flex; align-items: center; gap: 10px; }
+[data-skill-market] .sm-pu-row.is-clean { opacity: .72; }
+[data-skill-market] .sm-pu-rowmain { flex: 1; min-width: 0; }
+[data-skill-market] .sm-pu-name {
+  display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+[data-skill-market] .sm-pu-kind {
+  flex: none; padding: 1px 5px; border-radius: 4px; font-size: 9.5px; font-weight: 600;
+  background: var(--sm-fg-soft); color: var(--sm-muted);
+}
+[data-skill-market] .sm-pu-note { margin-top: 2px; font-size: 11.5px; line-height: 1.5; color: var(--sm-muted); overflow-wrap: anywhere; }
+[data-skill-market] .sm-confirm-body.sm-pu-err { color: var(--sm-danger); }
 @keyframes sm-fade { from { opacity: 0 } to { opacity: 1 } }
 @keyframes sm-pop { from { opacity: 0; transform: translateY(6px) scale(.98) } to { opacity: 1; transform: none } }
 
@@ -3451,6 +3472,74 @@ body[data-ds-dark-theme] [data-skill-market] {
        * @type {[{kind: 'idle'} | {kind: 'installing', id: string, name: string} | {kind: 'failed', id: string, name: string, reason: string}, Function]}
        */
       const [installState, setInstallState] = React.useState({ kind: 'idle' })
+      /**
+       * [dsh-perfect-ui patch] Installed-plugin update check, driven from the
+       * top-bar control: null while closed, otherwise
+       * {phase: 'idle'|'running'|'done'|'error', items, counts, error}.
+       * Same Host endpoint as the workbench page, so both entries agree.
+       * @type {[object|null, Function]}
+       */
+      const [pluginUpdates, setPluginUpdates] = React.useState(null)
+      const pluginUpdatesBusy = React.useRef(false)
+      /**
+       * [dsh-perfect-ui patch] Run the shared update check. Kept in a callback so
+       * the re-check button inside the dialog and the top-bar control share one
+       * guard: a second click while a check is in flight must be a no-op.
+       */
+      const checkPluginUpdates = React.useCallback(() => {
+        if (pluginUpdatesBusy.current) return
+        pluginUpdatesBusy.current = true
+        setPluginUpdates({ phase: 'running', items: [], counts: {}, error: '' })
+        fetch('/api/dsh-perfect-ui-plugins/updates')
+          .then((response) => response.text().then((text) => {
+            if (text === '' || text.trim() === '') throw new Error('空响应（HTTP ' + response.status + '）')
+            return JSON.parse(text)
+          }))
+          .then((answer) => {
+            if (answer === null || answer.ok !== true) throw new Error((answer && answer.error) || '检测失败')
+            setPluginUpdates({ phase: 'done', items: answer.items || [], counts: answer.counts || {}, error: '' })
+          })
+          .catch((error) => {
+            setPluginUpdates({
+              phase: 'error',
+              items: [],
+              counts: {},
+              error: '检测失败：' + ((error && error.message) || String(error)),
+            })
+          })
+          .then(() => { pluginUpdatesBusy.current = false })
+      }, [])
+      /**
+       * [dsh-perfect-ui patch] Update one registry bundle from the dialog: the
+       * Host computes the target version itself (same口径 as the workbench),
+       * then the list re-runs so the row disappears once it is current.
+       */
+      const applyPluginUpdate = React.useCallback((name) => {
+        setPluginUpdates((previous) => (previous === null ? previous : { ...previous, pending: name, notice: '' }))
+        fetch('/api/dsh-perfect-ui-plugins/update', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name }),
+        })
+          .then((response) => response.json())
+          .then((answer) => {
+            setPluginUpdates((previous) => (previous === null ? previous : {
+              ...previous,
+              pending: null,
+              notice: answer && answer.ok
+                ? ((answer.message || '更新完成') + '，重启 DSH 后生效')
+                : ((answer && answer.error) || '更新失败'),
+            }))
+            checkPluginUpdates()
+          })
+          .catch((error) => {
+            setPluginUpdates((previous) => (previous === null ? previous : {
+              ...previous,
+              pending: null,
+              notice: '更新异常：' + ((error && error.message) || String(error)),
+            }))
+          })
+      }, [checkPluginUpdates])
       const contentRef = React.useRef(null)
       const searchRef = React.useRef(null)
       const fileRef = React.useRef(null)
@@ -5675,6 +5764,72 @@ body[data-ds-dark-theme] [data-skill-market] {
 
       /* ── assembly ────────────────────────────────────────────────────── */
 
+      /* [dsh-perfect-ui patch] Top-left entry: "check all plugin updates".
+         The panel itself only manages skills, so the Host route
+         /api/dsh-perfect-ui-plugins/updates is the shared detection path that
+         the workbench page uses too — registry entries compare versions, Git
+         entries compare the pinned commit with the remote HEAD. */
+      const renderPluginUpdates = () => {
+        if (pluginUpdates === null) return null
+        const items = pluginUpdates.items || []
+        const counts = pluginUpdates.counts || {}
+        const updatable = items.filter((item) => item.canUpdate === true)
+        const gitItems = items.filter((item) => item.kind === 'git')
+        const closing = () => setPluginUpdates(null)
+        const rows = []
+        for (const item of updatable) {
+          const isGit = item.kind === 'git'
+          rows.push(h('div', { className: 'sm-pu-row', key: 'u-' + item.name },
+            h('div', { className: 'sm-pu-rowmain' },
+              h('div', { className: 'sm-pu-name' }, item.name,
+                h('span', { className: 'sm-pu-kind' }, isGit ? 'Git' : 'registry')),
+              h('div', { className: 'sm-pu-note' }, isGit
+                ? '远端有新提交 ' + (item.pinned || '?') + ' → ' + item.latest + '（Git 安装，需重新安装该插件）'
+                : '可更新 v' + item.version + ' → v' + item.latest)),
+            (!isGit && item.canUpdate) ? h('button', {
+              type: 'button',
+              className: 'sm-btn sm-btn-primary sm-btn-sm',
+              disabled: pluginUpdates.pending === item.name,
+              onClick: () => applyPluginUpdate(item.name),
+            }, pluginUpdates.pending === item.name ? '更新中…' : '更新') : null))
+        }
+        for (const item of gitItems) {
+          if (item.canUpdate === true) continue
+          rows.push(h('div', { className: 'sm-pu-row is-clean', key: 'g-' + item.name },
+            h('div', { className: 'sm-pu-rowmain' },
+              h('div', { className: 'sm-pu-name' }, item.name, h('span', { className: 'sm-pu-kind' }, 'Git')),
+              h('div', { className: 'sm-pu-note' },
+                item.reason || ('已是最新提交' + (item.pinned ? '（' + item.pinned + '）' : ''))))))
+        }
+        const summary = pluginUpdates.phase === 'running'
+          ? '正在检测已安装插件（registry 查版本，Git 查远端提交）…'
+          : pluginUpdates.phase === 'error'
+            ? pluginUpdates.error
+            : '已检测 ' + (counts.total !== undefined ? counts.total : 0) + ' 个已安装插件 · '
+              + (updatable.length ? updatable.length + ' 个可更新' : '全部是最新版本')
+              + (counts.git ? ' · Git 安装 ' + counts.git + ' 个' : '')
+        return h('div', { className: 'sm-confirm-layer' },
+          h('div', { className: 'sm-confirm-scrim', role: 'presentation', onClick: closing }),
+          h('div', {
+            className: 'sm-confirm sm-pu-card',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': '检测插件更新',
+          },
+            h('h2', { className: 'sm-confirm-title' }, '检测插件更新'),
+            h('p', { className: 'sm-confirm-body' + (pluginUpdates.phase === 'error' ? ' sm-pu-err' : '') }, summary),
+            pluginUpdates.notice ? h('p', { className: 'sm-confirm-detail' }, pluginUpdates.notice) : null,
+            rows.length ? h('div', { className: 'sm-pu-list' }, rows) : null,
+            h('div', { className: 'sm-confirm-actions' },
+              h('button', {
+                type: 'button',
+                className: 'sm-btn sm-btn-secondary',
+                disabled: pluginUpdates.phase === 'running',
+                onClick: () => checkPluginUpdates(),
+              }, pluginUpdates.phase === 'running' ? '检测中…' : '重新检测'),
+              h('button', { type: 'button', className: 'sm-btn sm-btn-primary', onClick: closing }, '关闭'))))
+      }
+
       const liveClass = status === 'loading' ? 'is-idle' : status === 'error' ? 'is-error' : ''
       const liveText = t(status === 'loading' ? 'status.syncing'
         : status === 'error' ? 'status.error'
@@ -5682,6 +5837,17 @@ body[data-ds-dark-theme] [data-skill-market] {
 
       return h('div', { 'data-skill-market': '', 'data-skill-market-panel': PANEL_ID },
         h('header', { className: 'sm-topbar' },
+          h('button', {
+            type: 'button',
+            className: 'sm-btn sm-btn-ghost sm-btn-sm',
+            'aria-label': '检测插件更新',
+            title: '检测全部插件更新',
+            onClick: () => {
+              if (pluginUpdates !== null) { setPluginUpdates(null); return }
+              checkPluginUpdates()
+            },
+          }, h(Icon, { name: 'i-arrow-up-circle', size: 16 }),
+            h('span', { className: 'sm-btn-label' }, '检测更新')),
           h('div', { className: 'sm-topbar-actions' },
             h('button', {
               type: 'button',
@@ -5754,6 +5920,8 @@ body[data-ds-dark-theme] [data-skill-market] {
         }),
 
         h(ConfirmDialog, { request: confirmRequest, onClose: () => setConfirmRequest(null) }),
+
+        renderPluginUpdates(),
 
         h('div', { className: 'sm-toast-wrap' },
           toast === null ? null : h('div', { className: 'sm-toast' },

@@ -30,6 +30,8 @@
  *   「Official bundles follow the DSH version and are not listed」→ listVersions 对官方包不适用。
  */
 
+import { spawn } from 'node:child_process'
+
 const PLUGIN_BASE = '/api/dsh-perfect-ui-plugins'
 
 /** 与客户端同源的围栏：只接受本机回环、非跨站请求。 */
@@ -169,7 +171,11 @@ async function readVersionList(pm, name) {
 
 /** 把行状态 + 版本清单折算成前端要的判定（/status 与 /ensure 共用）。 */
 function updateSummary(row, list) {
-  const candidate = updateCandidate(list)
+  let candidate = updateCandidate(list)
+  /* 候选版本必须"比已装的更高"：官方 listVersions 的版本表可能含当前版本，
+     而 updateCandidate 只筛「可安装」，不比版本号（否则会把最新=已装误报成可更新）。 */
+  const installedVer = (list && list.installed) || (row && row.version) || ''
+  if (candidate && installedVer && !versionGt(candidate.version, installedVer)) candidate = undefined
   const blocked = blockedVersions(list)
   const offered = row && typeof row.update === 'string' ? row.update : ''
   return {
@@ -188,6 +194,158 @@ function updateSummary(row, list) {
     listStatus: list.status,
     reason: list.status === 'listed' ? '' : (list.reason || ''),
   }
+}
+
+/* ---------------- 检测全部插件更新 ----------------
+ * 为什么需要这一层：官方只对 registry 安装的包提供「版本列表 + 更新」入口。
+ * Git / GitHub 安装的包，listVersions 直接 refused，原文：
+ *   「<name> is installed from Git, which lists no versions」
+ * 也就是说 DSH 自己**从不比较远端有没有新提交** —— 它只有更新机制
+ * （updateBundle 带钉到完整 commit 的 spec），没有检测。这里把检测补上：
+ *   registry → 走官方 listVersions + updateSummary（口径与插件市场一致）
+ *   git      → git ls-remote <url> HEAD 与安装时钉住的提交比对（只读，不改环境）
+ * 其余（官方包随 DSH 版本走 / management-required / 只读）如实标注无更新入口。
+ */
+
+const GIT_HEAD_TTL = 5 * 60 * 1000
+const gitHeadCache = new Map()
+
+/** 从 listBundles 的行 source 里取出远端地址与钉住的提交。
+ *  实测形态：github:owner/repo#<sha>  /  git+https://host/x.git#<sha>
+ *            git+ssh://git@host/x.git#<sha>
+ */
+export function parseGitSource(source) {
+  if (typeof source !== 'string' || !source) return null
+  const hash = source.lastIndexOf('#')
+  const base = hash >= 0 ? source.slice(0, hash) : source
+  const pinned = hash >= 0 ? source.slice(hash + 1).trim().toLowerCase() : ''
+  let url = ''
+  if (/^github:/i.test(base)) {
+    const repo = base.replace(/^github:/i, '').replace(/\.git$/i, '')
+    if (!/^[\w.-]+\/[\w.-]+$/u.test(repo)) return null
+    url = `https://github.com/${repo}.git`
+  } else if (/^git\+/i.test(base)) {
+    url = base.replace(/^git\+/i, '')
+  } else if (/^(https?|git|ssh):\/\//i.test(base) || /^[\w.-]+@[\w.-]+:/u.test(base)) {
+    url = base
+  } else {
+    return null
+  }
+  if (!/^(https?|git|ssh|file):\/\//u.test(url) && !/^[\w.-]+@[\w.-]+:/u.test(url)) return null
+  return { url, pinned: /^[0-9a-f]{7,40}$/u.test(pinned) ? pinned : '' }
+}
+
+/** 读远端默认分支的 HEAD 提交（带 5 分钟缓存与 8s 超时）。
+ *  失败时抛出带原文的错误，由调用方转成「无法读取远端」文案。 */
+function gitRemoteHead(url) {
+  const hit = gitHeadCache.get(url)
+  if (hit && Date.now() - hit.at < GIT_HEAD_TTL) return Promise.resolve(hit.sha)
+  return new Promise((resolve, reject) => {
+    let child
+    try {
+      child = spawn('git', ['ls-remote', url, 'HEAD'], {
+        windowsHide: true,
+        shell: false,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      })
+    } catch (e) {
+      reject(new Error(`无法运行 git：${errText(e)}`))
+      return
+    }
+    let out = ''
+    let err = ''
+    let settled = false
+    const finish = (fn, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      fn(value)
+    }
+    const timer = setTimeout(() => {
+      try { child.kill() } catch { /* 已退出 */ }
+      finish(reject, new Error('git ls-remote 超时（8s）'))
+    }, 8000)
+    child.stdout.on('data', (d) => { out += String(d) })
+    child.stderr.on('data', (d) => { err += String(d) })
+    child.on('error', (e) => finish(reject, new Error(`无法运行 git（${e.code || errText(e)}）`)))
+    child.on('close', (code) => {
+      if (code !== 0) {
+        const last = (err || '').trim().split('\n').filter(Boolean).pop() || `git 退出码 ${code}`
+        finish(reject, new Error(last))
+        return
+      }
+      const sha = (out.trim().split(/\s+/u)[0] || '').toLowerCase()
+      if (!/^[0-9a-f]{7,40}$/u.test(sha)) { finish(reject, new Error('远端没有返回 HEAD')); return }
+      gitHeadCache.set(url, { sha, at: Date.now() })
+      finish(resolve, sha)
+    })
+  })
+}
+
+/** 一个已装包 → 检测结果项。不抛错：任何异常都折算成 reason。 */
+async function inspectBundle(pm, row) {
+  const name = typeof row.name === 'string' ? row.name : (typeof row.packageName === 'string' ? row.packageName : '')
+  const kind = typeof row.update === 'string' ? row.update : ''
+  const item = {
+    name,
+    version: typeof row.version === 'string' ? row.version : '',
+    description: typeof row.description === 'string' ? row.description : '',
+    kind,
+    canUpdate: false,
+    latest: '',
+    pinned: '',
+    blocked: [],
+    reason: '',
+    source: typeof row.source === 'string' ? row.source : '',
+  }
+  if (kind === 'registry') {
+    const upd = updateSummary(row, await readVersionList(pm, name))
+    item.canUpdate = upd.canUpdate
+    item.latest = upd.latest
+    item.blocked = upd.blocked
+    item.reason = upd.reason
+    return item
+  }
+  if (kind === 'git') {
+    const parsed = parseGitSource(row.source)
+    if (!parsed) { item.reason = 'Git 安装，但安装记录里没有可解析的仓库地址'; return item }
+    item.pinned = parsed.pinned.slice(0, 7)
+    try {
+      const head = await gitRemoteHead(parsed.url)
+      item.latest = head.slice(0, 7)
+      const same = parsed.pinned !== '' && (head.startsWith(parsed.pinned) || parsed.pinned.startsWith(head))
+      item.canUpdate = parsed.pinned !== '' && !same
+      if (parsed.pinned === '') item.reason = 'Git 安装但没有钉住的提交，无法比对'
+    } catch (e) {
+      item.reason = `无法读取远端：${errText(e)}`
+    }
+    return item
+  }
+  item.reason = '宿主不提供更新入口（官方插件随 DSH 版本更新）'
+  return item
+}
+
+/** 版本比较：只做「是否更高」的判断，容错到无法解析就返回 false。
+ *  为什么需要：官方 listVersions 的版本表里**可能包含当前已装版本**，
+ *  而 updateCandidate 只按「可安装」筛选、不比版本号 —— 直接照抄会把
+ *  「最新版就是已装的这个」误报成「可更新」。 */
+function parseVersion(text) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(String(text || '').trim())
+  if (!m) return null
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), pre: m[4] || '' }
+}
+
+function versionGt(a, b) {
+  const x = parseVersion(a)
+  const y = parseVersion(b)
+  if (!x || !y) return false
+  if (x.major !== y.major) return x.major > y.major
+  if (x.minor !== y.minor) return x.minor > y.minor
+  if (x.patch !== y.patch) return x.patch > y.patch
+  if (x.pre === '' && y.pre === '') return false
+  if (x.pre === '') return true      /* 正式版高于预发布 */
+  if (y.pre === '') return false
+  return x.pre > y.pre               /* 预发布之间粗比较，够用 */
 }
 
 export function registerPluginRoutes(ctx) {
@@ -364,6 +522,47 @@ export function registerPluginRoutes(ctx) {
       } catch (e) {
         return send(res, 200, { ok: false, error: `更新失败：${errText(e)}` })
       }
+    }
+
+    /* ---- 检测全部插件更新 ----
+       与官方插件的区别：官方只在插件市场里对 **registry** 包判「可更新」；
+       Git/GitHub 安装的包连版本列表都没有（listVersions refused），所以官方
+       根本不会告诉你上游有没有新提交。这里逐个体检（见 inspectBundle）。 */
+    if (sub === '/updates') {
+      if (req.method !== 'GET') return send(res, 405, { ok: false, error: 'method not allowed' })
+      if (!pm || typeof pm.listBundles !== 'function') {
+        return send(res, 200, { ok: false, error: '宿主没有 pluginManager.listBundles，无法检测更新' })
+      }
+      let rows = []
+      try {
+        const raw = await pm.listBundles()
+        rows = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.bundles) ? raw.bundles : [])
+      } catch (e) {
+        return send(res, 200, { ok: false, error: `读取已装插件失败：${errText(e)}` })
+      }
+      /* 只体检「这个 profile 里装着的第三方包」：
+         官方包随 DSH 版本走；readOnlyReason 非空的包连卸载都不给，更不该提示更新。 */
+      const targets = rows.filter((row) => {
+        if (!row || typeof row !== 'object') return false
+        if (row.installed !== true && row.availability !== 'profile') return false
+        if (row.official === true) return false
+        if (typeof row.readOnlyReason === 'string' && row.readOnlyReason !== '') return false
+        return typeof row.name === 'string' && row.name !== ''
+      })
+      const items = await Promise.all(targets.map((row) => inspectBundle(pm, row)))
+      items.sort((a, b) => (Number(b.canUpdate) - Number(a.canUpdate)) || (a.name < b.name ? -1 : 1))
+      return send(res, 200, {
+        ok: true,
+        checkedAt: new Date().toISOString(),
+        counts: {
+          total: items.length,
+          updatable: items.filter((i) => i.canUpdate).length,
+          registry: items.filter((i) => i.kind === 'registry').length,
+          git: items.filter((i) => i.kind === 'git').length,
+          kept: items.filter((i) => i.kind !== 'registry' && i.kind !== 'git').length,
+        },
+        items,
+      })
     }
 
     /* ---- 依赖插件：确保存在（联动安装） ----
