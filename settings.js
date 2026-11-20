@@ -369,22 +369,38 @@ function PU_settings(React, h) {
     return 'idle';
   }
 
-  /* 查状态：进入设置页时对每个推荐项跑一次，让按钮直接显示「已安装 / 安装」 */
+  /* 查状态：进入设置页时对每个推荐项跑一次，让按钮直接显示「已安装 / 安装 / 更新」。
+     canUpdate 由 Host 按 DSH 官方口径算（listVersions 的 listed + dsh.bundle + 兼容 +
+     非废弃非预发布 + 宿主认为该包可走 registry 更新），前端不自己判断。 */
   function probeRecommended(item) {
     pluginApi('/status?name=' + encodeURIComponent(item.name)).then(function (d) {
       if (d && d.ok && d.available) {
         if (d.installed) {
+          var v = d.version || '?';
+          var blocked = d.blocked || [];
+          var canUpdate = d.canUpdate === true && !!d.latest;
+          var msg = '';
+          if (canUpdate) {
+            msg = '已安装 v' + v + '，可更新到 v' + d.latest;
+          } else if (blocked.length) {
+            /* 有更新的发布版但这台 DSH 装不了（官方插件详情里同样这么解释） */
+            msg = '已安装 v' + v + '；v' + blocked[0].version + ' ' + (blocked[0].reason || '不可安装');
+          } else if (d.listStatus === 'refused' && d.reason) {
+            msg = '已安装 v' + v + '（' + d.reason + '）';
+          } else {
+            msg = '已安装 v' + v + '（已是最新版本）';
+          }
           recSet(item.name, {
             phase: 'done',
+            err: false,
             version: d.version || '',
-            latest: d.latest || '',
-            newer: d.newer || [],
-            msg: (d.newer && d.newer.length)
-              ? ('已安装 v' + (d.version || '?') + '，可更新到 v' + d.latest)
-              : '',
+            latest: canUpdate ? d.latest : '',
+            canUpdate: canUpdate,
+            blocked: blocked,
+            msg: msg,
           });
         } else {
-          recSet(item.name, { phase: 'idle', version: '', latest: d.latest || '', msg: '' });
+          recSet(item.name, { phase: 'idle', err: false, version: '', latest: '', canUpdate: false, msg: '' });
         }
       } else {
         recSet(item.name, {
@@ -399,7 +415,7 @@ function PU_settings(React, h) {
 
   /* 安装：Host 路由内部先查状态，已装则直接回 already-installed（不让 pnpm 重跑）。 */
   function installRecommended(item) {
-    recSet(item.name, { phase: 'install', msg: '正在安装…' });
+    recSet(item.name, { phase: 'install', busyLabel: '安装中…', msg: '正在安装…' });
     pluginApi('/install', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -411,23 +427,47 @@ function PU_settings(React, h) {
         return;
       }
       if (d.alreadyInstalled) {
-        recSet(item.name, {
-          phase: 'done',
-          alreadyInstalled: true,
-          version: d.version || '',
-          latest: d.latest || '',
-          newer: d.newer || [],
-          msg: d.message || ('已安装 v' + (d.version || '?')),
-        });
+        /* 已装：不要停在 already-installed 上，回退成正常已装态并刷新更新判断 */
+        probeRecommended(item);
         return;
       }
       recSet(item.name, {
         phase: 'done',
+        err: false,
         version: d.version || '',
+        canUpdate: false,
         msg: '安装完成' + (d.version ? ' v' + d.version : '') + '，重启 DSH 后生效',
       });
     }).catch(function (e) {
       recSet(item.name, { phase: 'error', msg: '安装异常：' + ((e && e.message) || String(e)) });
+    });
+  }
+
+  /* 更新：走 Host 的 POST /update → 宿主官方 updateBundle(name, version)。
+     目标版本由 Host 自己按官方口径算，前端只发 name。 */
+  function updateRecommended(item) {
+    recSet(item.name, { phase: 'install', busyLabel: '更新中…', msg: '正在更新…' });
+    pluginApi('/update', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: item.name }),
+    }).then(function (d) {
+      if (!d) { recSet(item.name, { phase: 'error', msg: '空响应' }); return; }
+      if (!d.ok) {
+        recSet(item.name, { phase: 'done', err: true, msg: d.error || '更新失败' });
+        return;
+      }
+      recSet(item.name, {
+        phase: 'done',
+        err: false,
+        version: d.to || '',
+        canUpdate: false,
+        latest: '',
+        msg: (d.message || '更新完成') + '，重启 DSH 后生效',
+      });
+      probeRecommended(item);
+    }).catch(function (e) {
+      recSet(item.name, { phase: 'done', err: true, msg: '更新异常：' + ((e && e.message) || String(e)) });
     });
   }
 
@@ -540,16 +580,16 @@ function PU_settings(React, h) {
         }));
     }
 
-    /* 推荐卡的渲染：状态机 idle → install → done / error。
-       已装时按钮变「重新安装」，并在标题旁显示版本号。 */
+    /* 推荐卡的渲染：状态机 idle → install（安装/更新）→ done / error。
+       已装时按钮是「更新」（有可安装的新版本）或「重装」，标题旁显示当前版本号。 */
     function recCard(item) {
       var st = recGet(item.name);
       var phase = st.phase || 'idle';
       var busy = phase === 'install';
       var installed = phase === 'done';
-      var hasNewer = installed && st.newer && st.newer.length;
-      var btnText = busy ? '安装中…'
-        : (installed ? (hasNewer ? '更新' : '重装') : '安装');
+      var canUpdate = installed && st.canUpdate === true && !!st.latest;
+      var btnText = busy ? (st.busyLabel || '安装中…')
+        : (installed ? (canUpdate ? '更新' : '重装') : '安装');
 
       return h('div', { className: 'pus-rec', key: item.name },
         h('div', { className: 'pus-rec-main' },
@@ -563,12 +603,18 @@ function PU_settings(React, h) {
           h('div', { className: 'pus-rec-desc' }, item.desc),
           /* note：兼容性等前置条件（例如引擎版本门槛），不装也能先看到 */
           item.note ? h('div', { className: 'pus-rec-note' }, item.note) : null,
-          st.msg ? h('div', { className: 'pus-rec-msg' + (phase === 'error' ? ' is-err' : '') }, st.msg) : null),
+          st.msg
+            ? h('div', { className: 'pus-rec-msg' + ((phase === 'error' || st.err) ? ' is-err' : '') }, st.msg)
+            : null),
         h('button', {
           type: 'button',
-          className: 'pus-rec-btn' + (installed ? ' is-done' : ''),
+          className: 'pus-rec-btn' + (installed ? ' is-done' : '') + (canUpdate ? ' is-update' : ''),
           disabled: busy,
-          onClick: function () { if (!busy) installRecommended(item); },
+          onClick: function () {
+            if (busy) return;
+            if (canUpdate) updateRecommended(item);
+            else installRecommended(item);
+          },
         }, btnText));
     }
 
@@ -902,6 +948,8 @@ function PU_settings(React, h) {
     '.pus-rec-btn:hover{opacity:.9}',
     '.pus-rec-btn:disabled{opacity:.55;cursor:default}',
     '.pus-rec-btn.is-done{background:transparent;color:var(--dsw-alias-brand-primary,#209a72)}',
+    /* 可更新时按钮转成实心强调色，和「重装」的描边态区分开 */
+    '.pus-rec-btn.is-done.is-update{background:var(--dsw-alias-brand-primary,#209a72);color:#fff}',
     /* ---------- 广告（推广）位 ---------- */
     /* ---------- 广告 TAB 铺满 ----------
        TAB 面板高度由宿主的 .pus-panel 决定；这里让整条链
