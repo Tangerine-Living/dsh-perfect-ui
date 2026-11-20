@@ -6835,7 +6835,7 @@ window.__ModuleLoader__.load({
     var PU_PLUGIN_ID = "@local/dsh-perfect-ui";
     /* 构建版本戳。2.4.0 与 2.4.1 的诊断文字逐字相同，无法区分
        「修复无效」与「页面仍跑旧代际」。版本显示在卡片底部一次排除。 */
-    var PU_VERSION = "2.68.61";
+    var PU_VERSION = "2.68.62";
 
     /* ============ C. 技能市场 Client 模块（复刻，见文件顶层） ============ */
     var PU_SM = PU_skillMarketFactory(require);

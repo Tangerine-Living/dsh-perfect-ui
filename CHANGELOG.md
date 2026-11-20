@@ -4,6 +4,12 @@
 
 ---
 
+## v2.68.62 — 插件改以 GitHub 安装，一键更新真实生效
+
+- 安装方式由 `link:`（指向本地工作区）改为 `github:Tangerine-Living/dsh-perfect-ui#<commit>`。这是实现「像普通插件一样一键更新」的前提：宿主 `updateBundle` 只接受 registry 与 git 两种来源。
+- 更新按钮走宿主自带的 Git 更新路径（`planGitUpdate`），目标 spec 钉到完整 40 位 commit，不需要任何 token。
+- 本版本同时用于端到端验证：从 2.68.61 点「更新」应原地升到 2.68.62，版本与依赖 spec 一起变化。
+
 ## v2.68.61 — 客户端构建产物随仓库分发
 
 - `dist/client.js` 纳入版本库：`.gitignore` 由 `dist/` 改为 `dist/*` + `!dist/client.js`。
