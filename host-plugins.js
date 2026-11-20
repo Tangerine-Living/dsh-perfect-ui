@@ -382,10 +382,13 @@ function readSelfMeta() {
   } catch { return fallback }
 }
 
-/** 把各种仓库写法归一成可 ls-remote 的 URL。 */
-function normalizeRepoUrl(repository) {
+/** 把各种仓库写法归一成可 ls-remote 的 URL。本地路径（file: / 盘符路径）原样放行，
+ *  便于测试与「从本地裸仓库安装」的场景。 */
+export function normalizeRepoUrl(repository) {
   let url = String(repository || '').trim().replace(/^git\+/u, '')
   if (!url) return SELF_REPO_FALLBACK
+  if (/^file:/u.test(url)) return url
+  if (/^[A-Za-z]:[\\/]/u.test(url) || url.startsWith('/')) return url
   const gh = /^github:([^#\s]+)/u.exec(url)
   if (gh) return `https://github.com/${gh[1].replace(/\.git$/u, '')}.git`
   if (/^[\w.-]+\/[\w.-]+$/u.test(url)) return `https://github.com/${url}.git`
@@ -435,14 +438,16 @@ function gitRemoteTags(url) {
   })
 }
 
-/** 从 ls-remote 输出里挑出最大的 semver tag（v2.68.58 → 2.68.58；丢弃非版本 tag 与 peel 行）。 */
-function latestTagVersion(text) {
+/** 从 ls-remote 输出里挑出最大的 semver tag（v2.68.58 → 2.68.58）。
+ *  只认正式版：`v2.70.0-rc.1` 这种预发布 tag 不参与（不能让「更新」把用户推上预发布）。 */
+export function latestTagVersion(text) {
   let best = ''
   for (const line of String(text || '').split('\n')) {
     const parts = line.trim().split(/\s+/u)
     if (parts.length < 2 || !parts[1].startsWith('refs/tags/')) continue
     const ref = parts[1].slice('refs/tags/'.length).replace(/\^\{\}$/u, '').replace(/^v/u, '')
-    if (!parseVersion(ref)) continue
+    const parsed = parseVersion(ref)
+    if (!parsed || parsed.pre !== '') continue
     if (best === '' || versionGt(ref, best)) best = ref
   }
   return best
