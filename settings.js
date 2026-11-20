@@ -515,7 +515,7 @@ function PU_settings(React, h) {
     var st = recGet(ALL_UPD);
     var info = st.info || {};
     var mode = info.updateMode || '';
-    if (mode !== 'registry' && mode !== 'git') return;
+    if (mode !== 'registry') return;
     recSet(ALL_UPD, { phase: 'done', error: '', info: info, busy: true, note: '正在更新…', noteErr: false });
     pluginApi('/update', {
       method: 'POST',
@@ -544,7 +544,7 @@ function PU_settings(React, h) {
     var info = st.info || null;
     var mode = info ? (info.updateMode || '') : '';
     var canUpdate = !!(info && info.canUpdate);
-    var canInstall = canUpdate && (mode === 'registry' || mode === 'git');
+    var canInstall = canUpdate && mode === 'registry';
     var kindText = mode === 'registry' ? 'registry' : (mode === 'git' ? 'Git' : (mode === 'link' ? 'link' : '本地'));
     var summary = '';
     if (phase === 'error') {
@@ -558,6 +558,7 @@ function PU_settings(React, h) {
     } else if (canUpdate) {
       summary = '当前 v' + info.installed + ' · 可更新到 v' + info.latest;
       if (mode === 'link') summary += '（本地 link 安装：git pull 后重新构建即可）';
+      else if (mode === 'git') summary += '（Git 安装，需重新安装该插件）';
     } else {
       summary = '当前 v' + (info.installed || '?') + ' · 已是最新' + (info.latest ? '（远端 v' + info.latest + '）' : '');
     }
@@ -571,7 +572,9 @@ function PU_settings(React, h) {
           note || (canUpdate
             ? (mode === 'link'
               ? '仓库：' + (info.repoUrl || '') + ' · 本地 link 安装没有版本可升级'
-              : '可更新 v' + info.installed + ' → v' + info.latest)
+              : (mode === 'git'
+                ? '可更新到 v' + info.latest + '（Git 安装，需重新安装该插件）'
+                : '可更新 v' + info.installed + ' → v' + info.latest))
             : (info.error ? '检测失败，可点「重新检测」再试' : '无需更新')))),
       canInstall
         ? h('button', {
