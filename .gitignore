@@ -1,8 +1,9 @@
 # 依赖
 node_modules/
 
-# 构建产物（发布时由 npm 打包生成，不提交源码仓库）
-dist/
+# 构建产物：dist/client.js 随仓库分发，GitHub 安装/更新才能拿到客户端半边
+dist/*
+!dist/client.js
 
 # 本地缓存与临时文件
 .promo-cache/
