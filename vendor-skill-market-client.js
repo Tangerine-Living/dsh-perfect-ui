@@ -5813,7 +5813,10 @@ body[data-ds-dark-theme] [data-skill-market] {
         const counts = pluginUpdates.counts || {}
         const updatable = items.filter((item) => item.canUpdate === true)
         const gitItems = items.filter((item) => item.kind === 'git')
-        const closing = () => setPluginUpdatesOpen(false)
+        /* Closing the list also hides the strip: the user has just read it, so
+           repeating the same notice underneath would be noise. The top-bar
+           badge keeps the count, so the entry stays one click away. */
+        const closing = () => { setPluginUpdatesOpen(false); setPluginUpdatesDismissed(true) }
         const rows = []
         for (const item of updatable) {
           const isGit = item.kind === 'git'

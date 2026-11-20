@@ -321,7 +321,13 @@ async function inspectBundle(pm, row) {
     }
     return item
   }
-  item.reason = '宿主不提供更新入口（官方插件随 DSH 版本更新）'
+  /* 兜底：宿主没给 update 字段（官方包 / 只读包 / 无法解析的来源）。
+     本地 link 安装的包单独说清楚，否则会看到「官方插件随 DSH 更新」这种对不上号的解释。 */
+  item.reason = (typeof row.source === 'string' && row.source.startsWith('link:'))
+    ? '本地 link 安装，没有远端版本可比对'
+    : (row.official === true
+      ? '官方插件随 DSH 版本更新'
+      : '宿主未提供更新入口（来源无法比对版本）')
   return item
 }
 
