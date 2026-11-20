@@ -480,8 +480,13 @@ function PU_settings(React, h) {
        git      → git ls-remote 比对安装时钉住的提交（只报告，自动更新留给用户）
      两处入口共用同一个端点：设置·工作台 / 技能市场顶栏。 */
   var ALL_UPD = '__all_plugin_updates__';
+  /* 检测结果的时效：5 分钟内重复打开设置页不再重新联网（Git 那边要跑 ls-remote，
+     重跑一次几秒；设置页每次打开都重跑会显得慢）。 */
+  var ALL_UPD_TTL = 5 * 60 * 1000;
+  var allUpdAt = 0;
 
   function checkAllUpdates() {
+    allUpdAt = Date.now();
     recSet(ALL_UPD, { phase: 'loading', error: '' });
     pluginApi('/updates').then(function (d) {
       if (!d || !d.ok) {
@@ -498,6 +503,15 @@ function PU_settings(React, h) {
     }).catch(function (e) {
       recSet(ALL_UPD, { phase: 'error', error: '检测失败：' + ((e && e.message) || String(e)) });
     });
+  }
+
+  /* 自动检测：设置页一打开就跑，不需要点按钮。
+     正在跑（loading）或上次结果还新鲜（5 分钟内）就跳过，避免重复联网。 */
+  function autoCheckAllUpdates() {
+    var st = recGet(ALL_UPD);
+    if (st.phase === 'loading') return;
+    if (st.phase === 'done' && Date.now() - allUpdAt < ALL_UPD_TTL) return;
+    checkAllUpdates();
   }
 
   /* 从检测结果里更新单个 registry 包：复用 /update（目标版本由 Host 按官方口径算）。 */
@@ -519,7 +533,8 @@ function PU_settings(React, h) {
     });
   }
 
-  /* 检测结果面板：默认不自动检测（联网），点按钮才跑。
+  /* 检测结果面板：**设置页一打开就自动检测**（见 autoCheckAllUpdates），
+       不需要点按钮；按钮只用于「重新检测」。
        registry 可更新 → 直接给「更新」按钮（复用 /update）；
        Git 安装的有新提交 → 只报告（自动更新需要先知道远端 package 版本，宿主要求
        updateBundle 的 version 严格 semver 且高于当前，光有 commit 不够，故不代劳）。 */
@@ -566,7 +581,7 @@ function PU_settings(React, h) {
       } else if (phase === 'error') {
         summary = st.error || '检测失败';
       } else {
-        summary = 'registry 安装的比版本号，Git 安装的比远端提交；只检测，不会自动改动环境。';
+        summary = '正在自动检测已安装插件…（registry 比版本号，Git 比远端提交；只检测，不改动环境）';
       }
 
       return h('div', { className: 'pus-upd' },
@@ -579,7 +594,7 @@ function PU_settings(React, h) {
             className: 'pus-rec-btn',
             disabled: phase === 'loading',
             onClick: checkAllUpdates,
-          }, phase === 'loading' ? '检测中…' : (phase === 'done' ? '重新检测' : '开始检测'))),
+          }, phase === 'loading' ? '检测中…' : (phase === 'done' ? '重新检测' : '立即检测'))),
         rows.length ? h('div', { className: 'pus-upd-list' }, rows) : null);
     }
 
@@ -626,6 +641,9 @@ function PU_settings(React, h) {
       RECOMMEND.forEach(function (cat) {
         cat.items.forEach(function (item) { probeRecommended(item); });
       });
+      /* 插件更新检测也自动跑（用户明确要求「自动检测，不要手动」）：
+         5 分钟内重复打开不重跑，正在跑也不会重复发请求。 */
+      autoCheckAllUpdates();
       return function () {
         recSubs = recSubs.filter(function (f) { return f !== bump; });
         notifyPromoChanged = null;
